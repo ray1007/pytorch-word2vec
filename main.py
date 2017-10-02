@@ -33,7 +33,7 @@ parser.add_argument("--min_count", type=int, default=5, help="minimum frequency 
 parser.add_argument("--processes", type=int, default=4, help="number of processes")
 parser.add_argument("--num_workers", type=int, default=6, help="number of workers for data processsing")
 parser.add_argument("--iter", type=int, default=5, help="number of iterations")
-parser.add_argument("--cuda", type=bool, default=True, help="enable cuda")
+parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
 
 
 # Build the vocabulary.
@@ -195,9 +195,20 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
                         data_queue.put((word_idx, neg_idx, 0))
         print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
 
-def train_process_sent_producer(sent_queue, data_queue, train_file, word_count_actual, word2idx, freq, args):
-    chunk_size = args.file_size / args.processes
-    end_pos = args.file_size / args.processes * (p_id + 1)
+#def train_process_sent_producer(sent_queue, data_queue, train_file, word_count_actual, word2idx, freq, args):
+def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args):
+    train_file = open(args.train)
+    file_pos = args.file_size / args.processes * p_id
+    train_file.seek(file_pos, 0)
+    while True:
+        try:
+            train_file.read(1)
+        except UnicodeDecodeError:
+            file_pos -= 1
+            train_file.seek(file_pos, 0)
+        else:
+            train_file.seek(file_pos, 0)
+            break
 
     workers = []
     for i in range(args.num_workers):
@@ -249,23 +260,11 @@ def train_process_sent_producer(sent_queue, data_queue, train_file, word_count_a
         w.join()
 
 def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn, optimizer):
-    train_file = open(args.train)
-    file_pos = args.file_size / args.processes * p_id
-    train_file.seek(file_pos, 0)
-    while True:
-        try:
-            train_file.read(1)
-        except UnicodeDecodeError:
-            file_pos -= 1
-            train_file.seek(file_pos, 0)
-        else:
-            train_file.seek(file_pos, 0)
-            break
-
     sent_queue = mp.SimpleQueue()
     data_queue = mp.SimpleQueue()
 
-    t = mp.Process(target=train_process_sent_producer, args=(sent_queue, data_queue, train_file, word_count_actual, word2idx, freq, args))
+    #t = mp.Process(target=train_process_sent_producer, args=(sent_queue, data_queue, train_file, word_count_actual, word2idx, freq, args))
+    t = mp.Process(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args))
     t.start()
     #workers.append(t)
 
@@ -283,9 +282,12 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
             cnt += 1
             tStart = time.process_time()
             if args.cbow == 1:
-                data = Variable(torch.LongTensor(d))
-                #if args.cuda:
-                #    data.cuda()
+                if args.cuda:
+                    data = Variable(torch.LongTensor(d).cuda())
+                else:
+                    data = Variable(torch.LongTensor(d))
+                #    print(type(data))
+                #print(type(data))
                 print("@train_process-part1: %f" % (time.process_time() - tStart))
                 tStart = time.process_time()
                 #print(data.size())
@@ -310,7 +312,7 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
 
 if __name__ == '__main__':
     #set_start_method('spawn')
-    #set_start_method('forkserver')
+    set_start_method('forkserver')
 
     args = parser.parse_args()
     train_file = open(args.train)
