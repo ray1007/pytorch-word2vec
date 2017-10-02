@@ -97,21 +97,6 @@ class CBOW(nn.Module):
         neg_logits = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
 
         return torch.cat((pos_logits, neg_logits), 1)
-    '''
-    def forward(self, ctx_indices, word_idx):
-        # ctx_indices: [args.batch_size x args.window]
-        # word_idx: [args.batch_size]
-        c_embs = self.emb0_lookup(ctx_indices)
-        w_embs = self.emb1_lookup(word_idx)
-
-        # c_embs: [args.batch_size x args.window x args.size]
-        # w_embs: [args.batch_size x args.size]
-        #c_embs = torch.mean(c_embs, 1)[:,0,:]
-        c_embs = torch.mean(c_embs, 1)
-
-        return torch.sum(c_embs * w_embs, 1)
-        #return F.sigmoid(torch.sum(c_embs * w_embs, 1))
-    '''
 #class Word2vec(nn.Module):
 
 
@@ -154,31 +139,8 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
 
         # train cbow architecture
         if args.cbow == 1:
-            #put cython module here
-
             data = data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
             data_queue.put(data)
-            #data_queue.put(Variable(torch.IntTensor(data)))
-
-            '''
-            for i in range(len(sent_id)):
-                ctx_indices = []
-                for j in range(i-args.window, i+args.window+1):
-                    if j < 0 or j >= len(sent_id) or j == i:
-                        continue
-                    #ctx_indices.append( word2idx[ sent[j] ] )
-                    ctx_indices.append( sent_id[j] )
-                #word_idx = word2idx[ sent[i] ]
-                word_idx = sent_id[i]
-
-                # data = ([ctx_indices], word_idx)
-                data_queue.put((ctx_indices, word_idx, 1))
-
-                # negative sampling
-                for n in range(args.negative):
-                    neg_idx = np.random.randint(args.vocab_size)
-                    data_queue.put((ctx_indices, neg_idx, 0))
-            '''
         elif args.cbow == 0:
             for i in range(len(sent)):
                 word_idx = word2idx[ sent[i] ]
@@ -195,7 +157,6 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
                         data_queue.put((word_idx, neg_idx, 0))
         print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
 
-#def train_process_sent_producer(sent_queue, data_queue, train_file, word_count_actual, word2idx, freq, args):
 def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args):
     train_file = open(args.train)
     file_pos = args.file_size / args.processes * p_id
@@ -246,7 +207,7 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
             #sys.stdout.flush()
             sentence.clear()
 
-            print("Progess: %0.2f, Words/sec: %f" % (word_count_actual.value / args.train_words * 100, word_count_actual.value / (time.time() - args.t_start)))
+            print("Progess: %0.2f, Words/sec: %f" % (word_count_actual.value / args.train_words * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
 
             #cnt += 1
             #if cnt > 400:
@@ -318,7 +279,8 @@ if __name__ == '__main__':
     train_file = open(args.train)
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
-    vars(args)['t_start'] = time.time()
+    #vars(args)['t_start'] = time.time()
+    vars(args)['t_start'] = time.monotonic()
 
     word2idx, freq = build_vocab(args)
     word_count_actual = mp.Value('i', 0)
