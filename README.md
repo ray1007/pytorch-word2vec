@@ -31,7 +31,6 @@ When using CUDA with multiprocessing, one has to set the start method to 'spawn 
 
 
 Features to be added:
-- iter
-- lr anneal
 - output vectors
+- lr anneal
 - skip-gram

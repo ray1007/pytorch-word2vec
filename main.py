@@ -34,6 +34,7 @@ parser.add_argument("--processes", type=int, default=4, help="number of processe
 parser.add_argument("--num_workers", type=int, default=6, help="number of workers for data processsing")
 parser.add_argument("--iter", type=int, default=5, help="number of iterations")
 parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
+parser.add_argument("--output_ctx", action='store_true', default=False, help="output context embeddings")
 
 
 # Build the vocabulary.
@@ -97,6 +98,7 @@ class CBOW(nn.Module):
         neg_logits = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
 
         return torch.cat((pos_logits, neg_logits), 1)
+
 #class Word2vec(nn.Module):
 
 
@@ -177,43 +179,44 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
         w.start()
         workers.append(w)
 
-    cnt = 0
-    last_word_cnt = 0
-    word_cnt = 0
-    sentence = []
-    prev = ''
-    while True:
-        if word_cnt > args.train_words / args.processes:
-            break
+    for _ in range(args.iter):
+        train_file.seek(file_pos, 0)
 
-        s = train_file.read(1)
-        if not s:
-            break
-        elif s == ' ':
-            if prev in word2idx:
-                sentence.append(prev)
-            prev = ''
-        elif s == '\n':
-            if prev in word2idx:
-                sentence.append(prev)
-            prev = ''
-            sent_queue.put(copy.deepcopy(sentence))
-            #print(sentence)
-            word_cnt += len(sentence)
-            with word_count_actual.get_lock():
-                word_count_actual.value += word_cnt - last_word_cnt
-            last_word_cnt = word_cnt
-            #sys.stdout.write("Progess: %0.2f\r" % ( 100- (float(end_pos - current_pos) / chunk_size * 100)))
-            #sys.stdout.flush()
-            sentence.clear()
+        last_word_cnt = 0
+        word_cnt = 0
+        sentence = []
+        prev = ''
+        while True:
+            if word_cnt > args.train_words / args.processes:
+                break
 
-            print("Progess: %0.2f, Words/sec: %f" % (word_count_actual.value / args.train_words * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
+            s = train_file.read(1)
+            if not s:
+                break
+            elif s == ' ':
+                if prev in word2idx:
+                    sentence.append(prev)
+                prev = ''
+            elif s == '\n':
+                if prev in word2idx:
+                    sentence.append(prev)
+                prev = ''
+                sent_queue.put(copy.deepcopy(sentence))
+                word_cnt += len(sentence)
+                if word_cnt - last_word_cnt > 10000:
+                    with word_count_actual.get_lock():
+                        word_count_actual.value += word_cnt - last_word_cnt
+                    last_word_cnt = word_cnt
+                #sys.stdout.write("Progess: %0.2f\r" % ( 100- (float(end_pos - current_pos) / chunk_size * 100)))
+                #sys.stdout.flush()
+                sentence.clear()
 
-            #cnt += 1
-            #if cnt > 400:
-            #    break
-        else:
-            prev += s
+                print("Progess: %0.2f, Words/sec: %f" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
+
+            else:
+                prev += s
+        with word_count_actual.get_lock():
+            word_count_actual.value += word_cnt - last_word_cnt
 
     for i in range(args.num_workers):
         sent_queue.put(None)
@@ -224,10 +227,13 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
     sent_queue = mp.SimpleQueue()
     data_queue = mp.SimpleQueue()
 
-    #t = mp.Process(target=train_process_sent_producer, args=(sent_queue, data_queue, train_file, word_count_actual, word2idx, freq, args))
     t = mp.Process(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args))
     t.start()
-    #workers.append(t)
+
+    if args.cuda:
+        target = torch.FloatTensor([[1.0]+[0.0]*args.negative]).cuda()
+    else:
+        target = torch.FloatTensor([[1.0]+[0.0]*args.negative])
 
     # get from data_queue and feed to model
     cnt = 0
@@ -247,24 +253,17 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
                     data = Variable(torch.LongTensor(d).cuda())
                 else:
                     data = Variable(torch.LongTensor(d))
-                #    print(type(data))
-                #print(type(data))
                 print("@train_process-part1: %f" % (time.process_time() - tStart))
                 tStart = time.process_time()
-                #print(data.size())
-                #pass
 
                 optimizer.zero_grad()
 
                 logits = model(data)
-                #logit = model(ctx_indices, word_idx)
-                #print(ctx_indices.size(), word_idx.size())
-                #print(logit.size(), label.size())
 
-                #loss = loss_fn(logit, label)
-
-                #loss.backward()
-                #optimizer.step()
+                labels = Variable(target.expand(logits.size()))
+                loss = loss_fn(logits, labels)
+                loss.backward()
+                optimizer.step()
                 print("@train_process-part2: %f" % (time.process_time() - tStart))
     print('@train_process: got %d data' % cnt)
 
@@ -279,7 +278,6 @@ if __name__ == '__main__':
     train_file = open(args.train)
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
-    #vars(args)['t_start'] = time.time()
     vars(args)['t_start'] = time.monotonic()
 
     word2idx, freq = build_vocab(args)
@@ -288,7 +286,6 @@ if __name__ == '__main__':
     model = init_net(args)
     if args.cuda:
         model.cuda()
-    #loss_fn = nn.BCELoss()
     loss_fn = nn.BCEWithLogitsLoss()
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
     #pdb.set_trace()
@@ -301,3 +298,19 @@ if __name__ == '__main__':
 
     for p in processes:
         p.join()
+
+    # output vectors
+    with open(args.output, 'w') as out_f:
+        if args.cuda:
+            embs = model.emb0_lookup.weight.data.cpu().numpy()
+        else:
+            embs = model.emb0_lookup.weight.data.numpy()
+        for i,emb in enumerate(embs):
+            word = '</s>'
+            for w,idx in word2idx.items():
+                if idx == i:
+                    word = w
+                    break
+            row = [word]+[e.astype('str') for e in emb]
+            out_f.write( '%s\n' % ' '.join(row) )
+
