@@ -28,9 +28,10 @@ The aim of this project is to build a model for neural network based word embedd
 python variable. Providing type information.
 - Multiprocessing
 When using CUDA with multiprocessing, one has to set the start method to 'spawn or 'forkserver' with `set_start_method()` method in `__main__()`.
-
+- #put embedding in CPU, only move to GPU after lookup operation.
+- found that adding `sparse=True` of `torch.nn.Embedding()` improve GPU memory usage.
 
 Features to be added:
-- output vectors
+- random number generator in C (Cython)
 - lr anneal
 - skip-gram

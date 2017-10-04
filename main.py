@@ -80,9 +80,10 @@ def build_vocab(args):
 class CBOW(nn.Module):
     def __init__(self, args):
         super(CBOW, self).__init__()
-        self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size)
-        self.emb1_lookup = nn.Embedding(args.vocab_size+1, args.size)
+        self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, sparse=True)
+        self.emb1_lookup = nn.Embedding(args.vocab_size+1, args.size, sparse=True)
         self.window = args.window
+        self.use_cuda = args.cuda
 
     def forward(self, data):
         ctx_indices = data[:, 0:2*self.window]
@@ -90,14 +91,24 @@ class CBOW(nn.Module):
         neg_indices = data[:, 2*self.window+1:]
 
         c_embs = self.emb0_lookup(ctx_indices)
-        c_embs = torch.mean(c_embs, 1, keepdim=True)
         w_embs = self.emb1_lookup(word_idx)
         n_embs = self.emb1_lookup(neg_indices)
+        if not self.use_cuda:
+            c_embs = c_embs.cuda()
+            w_embs = w_embs.cuda()
+            n_embs = n_embs.cuda()
+        c_embs = torch.mean(c_embs, 1, keepdim=True)
 
-        pos_logits = torch.sum(c_embs[:,0,:] * w_embs, 1, keepdim=True)
+        #pos_logits = torch.sum(c_embs[:,0,:] * w_embs, 1, keepdim=True)
+        pos_logits = torch.sum(c_embs[:,0,:] * w_embs, 1)
         neg_logits = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
 
-        return torch.cat((pos_logits, neg_logits), 1)
+        #return torch.cat((pos_logits, neg_logits), 1)
+        ones = Variable(torch.ones(pos_logits.data.size()).cuda(), requires_grad=False) 
+        pos_loss = torch.mean( ones- F.logsigmoid(pos_logits) )
+        neg_loss = torch.mean( torch.sum(-1 * F.logsigmoid(neg_logits), 1) )
+        return pos_loss + neg_loss
+
 
 #class Word2vec(nn.Module):
 
@@ -144,6 +155,8 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
             data = data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
             data_queue.put(data)
         elif args.cbow == 0:
+            #data = data_producer.sg_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
+            #data_queue.put(data)
             for i in range(len(sent)):
                 word_idx = word2idx[ sent[i] ]
                 for j in range(i-args.window, i+args.window+1):
@@ -250,18 +263,24 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
             tStart = time.process_time()
             if args.cbow == 1:
                 if args.cuda:
-                    data = Variable(torch.LongTensor(d).cuda())
+                    data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
+                    #data = Variable(torch.LongTensor(d).pin_memory())
                 else:
-                    data = Variable(torch.LongTensor(d))
+                    data = Variable(torch.LongTensor(d), requires_grad=False)
+                #data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
+                #data = Variable(torch.LongTensor(d), requires_grad=False)
                 print("@train_process-part1: %f" % (time.process_time() - tStart))
                 tStart = time.process_time()
 
                 optimizer.zero_grad()
 
+                loss = model(data)
+                '''
                 logits = model(data)
 
-                labels = Variable(target.expand(logits.size()))
+                labels = Variable(target.expand(logits.size()), requires_grad=False)
                 loss = loss_fn(logits, labels)
+                '''
                 loss.backward()
                 optimizer.step()
                 print("@train_process-part2: %f" % (time.process_time() - tStart))
@@ -286,6 +305,13 @@ if __name__ == '__main__':
     model = init_net(args)
     if args.cuda:
         model.cuda()
+    #model.emb0_lookup.cpu()
+    #model.emb1_lookup.cpu()
+    #pdb.set_trace()
+    #if args.cuda:
+    #    loss_fn = nn.BCEWithLogitsLoss().cuda()
+    #else:
+    #    loss_fn = nn.BCEWithLogitsLoss()
     loss_fn = nn.BCEWithLogitsLoss()
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
     #pdb.set_trace()
@@ -305,6 +331,7 @@ if __name__ == '__main__':
             embs = model.emb0_lookup.weight.data.cpu().numpy()
         else:
             embs = model.emb0_lookup.weight.data.numpy()
+        print(embs.shape)
         for i,emb in enumerate(embs):
             word = '</s>'
             for w,idx in word2idx.items():
