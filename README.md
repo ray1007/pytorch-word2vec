@@ -12,6 +12,10 @@ The aim of this project is to build a model for neural network based word embedd
 - `CUDA_VISIBLE_DEVICES=<device_id> ./main.py --cuda --train <your_corpus.txt> --output --iters --processes`
 - `./main.py --train <your_corpus.txt>`
 
+### Benchmarking:
+- Training speed
+- GPU Memory Usage
+
 ### Related works:
 - The original word2vec is really fast. Besides the fact that it is written in C, it splits the training file into chunks. Each chunk is read by multiple threads and each thread asynchronously updates the model parameters. Sampling is done by random number generator. The calcualtion of gradients is further optimized by using pre-calculated look-up tables instead of performing exponential arithmetics in the runtime. 
 - [Gensim](https://radimrehurek.com/gensim/models/word2vec.html) is reported to be a faster python implementation of word2vec. Gensim cythonized each thread. It also built a look-up table for exponential. The author wrote 3 articles about the techniques used in gensim. Version 1: [With Numpy](https://rare-technologies.com/deep-learning-with-word2vec-and-gensim/), Version 2: [Add Cython & BLAS](https://rare-technologies.com/word2vec-in-python-part-two-optimizing/), Version 3: [Add Parallelizing](https://rare-technologies.com/word2vec-in-python-part-two-optimizing/).
@@ -29,9 +33,10 @@ python variable. Providing type information.
 - Multiprocessing
 When using CUDA with multiprocessing, one has to set the start method to 'spawn or 'forkserver' with `set_start_method()` method in `__main__()`.
 - #put embedding in CPU, only move to GPU after lookup operation.
-- found that adding `sparse=True` of `torch.nn.Embedding()` improve GPU memory usage.
+- batching prevents GPU out-of-memory problem.
+- found that adding `sparse=True` of `torch.nn.Embedding()` reduces GPU memory usage.
 
-Features to be added:
+### Features to be added:
 - random number generator in C (Cython)
 - lr anneal
 - skip-gram

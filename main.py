@@ -33,6 +33,7 @@ parser.add_argument("--min_count", type=int, default=5, help="minimum frequency 
 parser.add_argument("--processes", type=int, default=4, help="number of processes")
 parser.add_argument("--num_workers", type=int, default=6, help="number of workers for data processsing")
 parser.add_argument("--iter", type=int, default=5, help="number of iterations")
+parser.add_argument("--batch_size", type=int, default=100, help="(max) batch size")
 parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
 parser.add_argument("--output_ctx", action='store_true', default=False, help="output context embeddings")
 
@@ -131,7 +132,7 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
 
         #print(sent)
         sent_id = []
-        tStart = time.process_time()
+        #tStart = time.process_time()
         # subsampling
         if args.sample != 0:
             sent_len = len(sent)
@@ -147,13 +148,27 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
                 else:
                     i += 1
                     sent_id.append( word2idx[word] )
-        print("@train_pc_worker-part1: %f" % (time.process_time() - tStart))
-        tStart = time.process_time()
+        if len(sent_id) == 0:
+            continue
+        #print("@train_pc_worker-part1: %f" % (time.process_time() - tStart))
+        #tStart = time.process_time()
 
         # train cbow architecture
         if args.cbow == 1:
-            data = data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
-            data_queue.put(data)
+            #data = data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
+            for chunk in data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size, args.batch_size):
+                if chunk.shape[0] == 0:
+                    print(len(sent_id))
+               
+                data_queue.put(chunk)
+            '''
+            n_chunks = int((data.shape[0] - args.batch_size) / args.batch_size) + 1
+            n_chunks = data.shape[0] // args.batch_size + 1
+
+            for chunk in np.array_split(data, n_chunks):
+                data_queue.put(chunk)
+            '''
+            #data_queue.put(data)
         elif args.cbow == 0:
             #data = data_producer.sg_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
             #data_queue.put(data)
@@ -170,7 +185,7 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
                     for n in range(args.negative):
                         neg_idx = np.random.randint(args.vocab_size)
                         data_queue.put((word_idx, neg_idx, 0))
-        print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
+        #print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
 
 def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args):
     train_file = open(args.train)
@@ -192,7 +207,8 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
         w.start()
         workers.append(w)
 
-    for _ in range(args.iter):
+    for it in range(args.iter):
+        print("iter: %d" % it)
         train_file.seek(file_pos, 0)
 
         last_word_cnt = 0
@@ -214,17 +230,19 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
                 if prev in word2idx:
                     sentence.append(prev)
                 prev = ''
-                sent_queue.put(copy.deepcopy(sentence))
+                if len(sentence) > 0:
+                    sent_queue.put(copy.deepcopy(sentence))
                 word_cnt += len(sentence)
                 if word_cnt - last_word_cnt > 10000:
                     with word_count_actual.get_lock():
                         word_count_actual.value += word_cnt - last_word_cnt
                     last_word_cnt = word_cnt
                 #sys.stdout.write("Progess: %0.2f\r" % ( 100- (float(end_pos - current_pos) / chunk_size * 100)))
-                #sys.stdout.flush()
+                sys.stdout.write("Progess: %0.2f, Words/sec: %f\r" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
+                sys.stdout.flush()
                 sentence.clear()
 
-                print("Progess: %0.2f, Words/sec: %f" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
+                #print("Progess: %0.2f, Words/sec: %f" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
 
             else:
                 prev += s
@@ -260,7 +278,7 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
                 break
         else:
             cnt += 1
-            tStart = time.process_time()
+            #tStart = time.process_time()
             if args.cbow == 1:
                 if args.cuda:
                     data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
@@ -269,8 +287,8 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
                     data = Variable(torch.LongTensor(d), requires_grad=False)
                 #data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
                 #data = Variable(torch.LongTensor(d), requires_grad=False)
-                print("@train_process-part1: %f" % (time.process_time() - tStart))
-                tStart = time.process_time()
+                #print("@train_process-part1: %f" % (time.process_time() - tStart))
+                #tStart = time.process_time()
 
                 optimizer.zero_grad()
 
@@ -283,7 +301,7 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
                 '''
                 loss.backward()
                 optimizer.step()
-                print("@train_process-part2: %f" % (time.process_time() - tStart))
+                #print("@train_process-part2: %f" % (time.process_time() - tStart))
     print('@train_process: got %d data' % cnt)
 
     t.join()
@@ -297,7 +315,6 @@ if __name__ == '__main__':
     train_file = open(args.train)
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
-    vars(args)['t_start'] = time.monotonic()
 
     word2idx, freq = build_vocab(args)
     word_count_actual = mp.Value('i', 0)
@@ -305,9 +322,6 @@ if __name__ == '__main__':
     model = init_net(args)
     if args.cuda:
         model.cuda()
-    #model.emb0_lookup.cpu()
-    #model.emb1_lookup.cpu()
-    #pdb.set_trace()
     #if args.cuda:
     #    loss_fn = nn.BCEWithLogitsLoss().cuda()
     #else:
@@ -316,6 +330,7 @@ if __name__ == '__main__':
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
     #pdb.set_trace()
 
+    vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
         p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, freq, args, model, loss_fn, optimizer))
