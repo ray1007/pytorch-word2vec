@@ -67,16 +67,16 @@ def build_vocab(args):
             sys.stdout.write('%d\r' % len(vocab))
     freq = {k:v for k,v in vocab.items() if v > args.min_count}
     word_count = sum([freq[k] for k in freq])
-    word_freq_list = sorted(freq.items(), key=lambda x:x[1], reverse=True)
+    word_list = sorted(freq, key=freq.get, reverse=True)
     word2idx = {}
-    for i,(w,f) in enumerate(word_freq_list):
+    for i,w in enumerate(word_list):
         word2idx[w] = i
 
     print("Vocab size: %ld" % len(word2idx))
     print("Words in train file: %ld" % word_count)
     vars(args)['vocab_size'] = len(word2idx)
     vars(args)['train_words'] = word_count
-    return word2idx, freq
+    return word2idx, word_list, freq
 
 class CBOW(nn.Module):
     def __init__(self, args):
@@ -254,20 +254,15 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
     for w in workers:
         w.join()
 
-def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn, optimizer):
+def train_process(p_id, word_count_actual, word2idx, freq, args, model, optimizer):
     sent_queue = mp.SimpleQueue()
     data_queue = mp.SimpleQueue()
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args))
     t.start()
 
-    if args.cuda:
-        target = torch.FloatTensor([[1.0]+[0.0]*args.negative]).cuda()
-    else:
-        target = torch.FloatTensor([[1.0]+[0.0]*args.negative])
-
     # get from data_queue and feed to model
-    cnt = 0
+    #cnt = 0
     none_cnt = 0
     while True:
         #try:
@@ -277,32 +272,23 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, loss_fn,
             if none_cnt >= args.num_workers:
                 break
         else:
-            cnt += 1
+            #cnt += 1
             #tStart = time.process_time()
             if args.cbow == 1:
                 if args.cuda:
                     data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
-                    #data = Variable(torch.LongTensor(d).pin_memory())
                 else:
                     data = Variable(torch.LongTensor(d), requires_grad=False)
-                #data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
-                #data = Variable(torch.LongTensor(d), requires_grad=False)
                 #print("@train_process-part1: %f" % (time.process_time() - tStart))
                 #tStart = time.process_time()
 
                 optimizer.zero_grad()
 
                 loss = model(data)
-                '''
-                logits = model(data)
-
-                labels = Variable(target.expand(logits.size()), requires_grad=False)
-                loss = loss_fn(logits, labels)
-                '''
                 loss.backward()
                 optimizer.step()
                 #print("@train_process-part2: %f" % (time.process_time() - tStart))
-    print('@train_process: got %d data' % cnt)
+    #print('@train_process: got %d data' % cnt)
 
     t.join()
     print("@train_process: end")
@@ -316,43 +302,46 @@ if __name__ == '__main__':
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
 
-    word2idx, freq = build_vocab(args)
+    word2idx, word_list, freq = build_vocab(args)
+
     word_count_actual = mp.Value('i', 0)
 
     model = init_net(args)
     if args.cuda:
         model.cuda()
-    #if args.cuda:
-    #    loss_fn = nn.BCEWithLogitsLoss().cuda()
-    #else:
-    #    loss_fn = nn.BCEWithLogitsLoss()
-    loss_fn = nn.BCEWithLogitsLoss()
+    #loss_fn = nn.BCEWithLogitsLoss()
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
     #pdb.set_trace()
 
+    '''
     vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
-        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, freq, args, model, loss_fn, optimizer))
+        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, freq, args, model, optimizer))
         p.start()
         processes.append(p)
 
     for p in processes:
         p.join()
+    '''
 
+    tStart = time.process_time()
     # output vectors
+    if args.cuda:
+        embs = model.emb0_lookup.weight.data.cpu().numpy()
+    else:
+        embs = model.emb0_lookup.weight.data.numpy()
+
+    data_producer.write_embs(args.output, word_list, embs, args.vocab_size, args.size)
+    '''
     with open(args.output, 'w') as out_f:
-        if args.cuda:
-            embs = model.emb0_lookup.weight.data.cpu().numpy()
-        else:
-            embs = model.emb0_lookup.weight.data.numpy()
         print(embs.shape)
-        for i,emb in enumerate(embs):
-            word = '</s>'
-            for w,idx in word2idx.items():
-                if idx == i:
-                    word = w
-                    break
-            row = [word]+[e.astype('str') for e in emb]
+        w = '</s>'
+        row = [w]+[e.astype('str') for e in embs[len(word_list)]]
+        out_f.write( '%s\n' % ' '.join(row) )
+        for i,w in enumerate(word_list):
+            row = [w]+[e.astype('str') for e in embs[i]]
             out_f.write( '%s\n' % ' '.join(row) )
+    '''
+    print("@output: %f" % (time.process_time() - tStart))
 
