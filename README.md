@@ -35,8 +35,12 @@ When using CUDA with multiprocessing, one has to set the start method to 'spawn 
 - #put embedding in CPU, only move to GPU after lookup operation.
 - batching prevents GPU out-of-memory problem.
 - found that adding `sparse=True` of `torch.nn.Embedding()` reduces GPU memory usage.
+- found that using memeory view instead of numpy array in cython is a bit faster.
 
 ### Features to be added:
-- random number generator in C (Cython)
+- fixed bug in cbow producer
+- evaluation not good. does lr has sth to do woth the performance? or maybe other bug?
+
 - lr anneal
+- random number generator in C (Cython)
 - skip-gram

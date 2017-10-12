@@ -103,11 +103,14 @@ class CBOW(nn.Module):
         #pos_logits = torch.sum(c_embs[:,0,:] * w_embs, 1, keepdim=True)
         pos_logits = torch.sum(c_embs[:,0,:] * w_embs, 1)
         neg_logits = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
+        #print(pos_logits.size())
+        #print(neg_logits.size())
+
 
         #return torch.cat((pos_logits, neg_logits), 1)
         ones = Variable(torch.ones(pos_logits.data.size()).cuda(), requires_grad=False) 
-        pos_loss = torch.mean( ones- F.logsigmoid(pos_logits) )
-        neg_loss = torch.mean( torch.sum(-1 * F.logsigmoid(neg_logits), 1) )
+        pos_loss = torch.sum( ones- F.sigmoid(pos_logits) )
+        neg_loss = torch.sum( torch.sum(-1 * F.sigmoid(neg_logits), 1) )
         return pos_loss + neg_loss
 
 
@@ -118,6 +121,7 @@ class CBOW(nn.Module):
 def init_net(args):
     if args.cbow == 1:
         vars(args)['lr'] = 0.05
+        #vars(args)['lr'] = 0.0005
         return CBOW(args)
     elif args.cbow == 0:
         pass
@@ -155,13 +159,13 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
 
         # train cbow architecture
         if args.cbow == 1:
-            #data = data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
             for chunk in data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size, args.batch_size):
                 if chunk.shape[0] == 0:
                     print(len(sent_id))
                
                 data_queue.put(chunk)
             '''
+            data = data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
             n_chunks = int((data.shape[0] - args.batch_size) / args.batch_size) + 1
             n_chunks = data.shape[0] // args.batch_size + 1
 
@@ -208,7 +212,7 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
         workers.append(w)
 
     for it in range(args.iter):
-        print("iter: %d" % it)
+        #print("iter: %d" % it)
         train_file.seek(file_pos, 0)
 
         last_word_cnt = 0
@@ -238,8 +242,8 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
                         word_count_actual.value += word_cnt - last_word_cnt
                     last_word_cnt = word_cnt
                 #sys.stdout.write("Progess: %0.2f\r" % ( 100- (float(end_pos - current_pos) / chunk_size * 100)))
-                sys.stdout.write("Progess: %0.2f, Words/sec: %f\r" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
-                sys.stdout.flush()
+                #sys.stdout.write("Progess: %0.2f, Words/sec: %f\r" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
+                #sys.stdout.flush()
                 sentence.clear()
 
                 #print("Progess: %0.2f, Words/sec: %f" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
@@ -264,6 +268,7 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, optimize
     # get from data_queue and feed to model
     #cnt = 0
     none_cnt = 0
+    prev_word_cnt = 0
     while True:
         #try:
         d = data_queue.get()
@@ -272,6 +277,18 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, optimize
             if none_cnt >= args.num_workers:
                 break
         else:
+            # lr anneal & output    
+            if word_count_actual.value - prev_word_cnt > 10000:
+                lr = args.lr * (1 - word_count_actual.value / (args.iter * args.train_words))
+                if lr < 0.0001 * args.lr:
+                    lr = 0.0001 * args.lr 
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = lr
+                #print(lr)
+                sys.stdout.write("Alpha: %0.4f, Progess: %0.2f, Words/sec: %f\r" % (lr, word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
+                sys.stdout.flush()
+                prev_word_cnt = word_count_actual.value
+
             #cnt += 1
             #tStart = time.process_time()
             if args.cbow == 1:
@@ -313,7 +330,6 @@ if __name__ == '__main__':
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
     #pdb.set_trace()
 
-    '''
     vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
@@ -323,7 +339,6 @@ if __name__ == '__main__':
 
     for p in processes:
         p.join()
-    '''
 
     tStart = time.process_time()
     # output vectors
@@ -333,15 +348,5 @@ if __name__ == '__main__':
         embs = model.emb0_lookup.weight.data.numpy()
 
     data_producer.write_embs(args.output, word_list, embs, args.vocab_size, args.size)
-    '''
-    with open(args.output, 'w') as out_f:
-        print(embs.shape)
-        w = '</s>'
-        row = [w]+[e.astype('str') for e in embs[len(word_list)]]
-        out_f.write( '%s\n' % ' '.join(row) )
-        for i,w in enumerate(word_list):
-            row = [w]+[e.astype('str') for e in embs[i]]
-            out_f.write( '%s\n' % ' '.join(row) )
-    '''
     print("@output: %f" % (time.process_time() - tStart))
 
