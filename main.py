@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import time
+import queue
 
 import numpy as np
 import torch
@@ -76,6 +77,12 @@ def build_vocab(args):
     print("Words in train file: %ld" % word_count)
     vars(args)['vocab_size'] = len(word2idx)
     vars(args)['train_words'] = word_count
+
+    #if args.negative > 0:
+    #    neg_sample_table = data_producer.init_unigram_table(word_list, freq, word_count)
+        #pdb.set_trace()
+
+    #return word2idx, word_list, freq, neg_sample_table
     return word2idx, word_list, freq
 
 class CBOW(nn.Module):
@@ -83,6 +90,8 @@ class CBOW(nn.Module):
         super(CBOW, self).__init__()
         self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, sparse=True)
         self.emb1_lookup = nn.Embedding(args.vocab_size+1, args.size, sparse=True)
+        self.emb0_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
+        self.emb1_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.window = args.window
         self.use_cuda = args.cuda
 
@@ -127,7 +136,9 @@ def init_net(args):
         pass
 
 # Training
-def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
+#def train_process_worker(sent_queue, data_queue, word2idx, freq, neg_sample_table, args):
+def train_process_worker(sent_queue, data_queue, word2idx, freq, table_ptr_val, args):
+    #print("#")
     while True:
         sent = sent_queue.get()
         if sent is None:
@@ -159,10 +170,13 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
 
         # train cbow architecture
         if args.cbow == 1:
-            for chunk in data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size, args.batch_size):
+            #for chunk in data_producer.cbow_producer(sent_id, len(sent_id), neg_sample_table, args.window, args.negative, args.vocab_size, args.batch_size):
+            #print("$")
+            #for chunk in data_producer.cbow_producer(sent_id, len(sent_id), args.table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size):
+            for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size):
                 if chunk.shape[0] == 0:
                     print(len(sent_id))
-               
+                #print(chunk[0]) 
                 data_queue.put(chunk)
             '''
             data = data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
@@ -191,7 +205,8 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, args):
                         data_queue.put((word_idx, neg_idx, 0))
         #print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
 
-def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args):
+#def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, neg_sample_table, args):
+def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, table_ptr_val, args):
     train_file = open(args.train)
     file_pos = args.file_size / args.processes * p_id
     train_file.seek(file_pos, 0)
@@ -207,7 +222,10 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
 
     workers = []
     for i in range(args.num_workers):
-        w = mp.Process(target=train_process_worker, args=(sent_queue, data_queue, word2idx, freq, args))
+        #w_id = p_id * args.processes + i,
+        #w = mp.Process(target=train_process_worker, args=(sent_queue, data_queue, word2idx, freq, neg_sample_table, args))
+        #w = mp.Process(target=train_process_worker, args=(sent_queue, data_queue, word2idx, freq, args))
+        w = threading.Thread(target=train_process_worker, args=(sent_queue, data_queue, word2idx, freq, table_ptr_val, args))
         w.start()
         workers.append(w)
 
@@ -258,11 +276,18 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
     for w in workers:
         w.join()
 
-def train_process(p_id, word_count_actual, word2idx, freq, args, model, optimizer):
-    sent_queue = mp.SimpleQueue()
-    data_queue = mp.SimpleQueue()
+#def train_process(p_id, word_count_actual, word2idx, freq, neg_sample_table, args, model, optimizer):
+def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model, optimizer):
+    #sent_queue = mp.SimpleQueue()
+    #data_queue = mp.SimpleQueue()
+    sent_queue = queue.Queue()
+    data_queue = queue.Queue()
 
-    t = mp.Process(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args))
+    if args.negative > 0:
+        table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
+    #t = mp.Process(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, neg_sample_table, args))
+    #t = mp.Process(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args))
+    t = threading.Thread(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, table_ptr_val, args))
     t.start()
 
     # get from data_queue and feed to model
@@ -308,20 +333,28 @@ def train_process(p_id, word_count_actual, word2idx, freq, args, model, optimize
     #print('@train_process: got %d data' % cnt)
 
     t.join()
-    print("@train_process: end")
+    #print("@train_process: end")
 
 if __name__ == '__main__':
     #set_start_method('spawn')
     set_start_method('forkserver')
 
     args = parser.parse_args()
+    print("Starting training using file %s" % args.train)
     train_file = open(args.train)
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
 
+    #word2idx, word_list, freq, table_ptr_val = build_vocab(args)
     word2idx, word_list, freq = build_vocab(args)
+    #vars(args)['table_ptr_val'] = table_ptr_val
+    #pdb.set_trace()
+    #neg_sample_table = mp.Array('i', neg_sample_table)
+    #pdb.set_trace()
 
     word_count_actual = mp.Value('i', 0)
+    
+    #data_producer.init_rng(args.processes)
 
     model = init_net(args)
     if args.cuda:
@@ -333,7 +366,8 @@ if __name__ == '__main__':
     vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
-        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, freq, args, model, optimizer))
+        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model, optimizer))
+        #p = threading.Thread(target=train_process, args=(p_id, word_count_actual, word2idx, freq, args, model, optimizer))
         p.start()
         processes.append(p)
 

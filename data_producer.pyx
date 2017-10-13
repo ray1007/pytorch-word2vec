@@ -2,17 +2,62 @@ import numpy as np
 cimport numpy as np
 import cython
 from libc.stdio cimport FILE, fopen, fwrite, fscanf, fclose, fprintf, fseek, ftell, SEEK_END, rewind, fread
+from libc.stdlib cimport malloc, free, rand, RAND_MAX
+from libc.math cimport pow
+from libc.stdint cimport uintptr_t
+
+#cdef int table_size = int(1e8)
+#cdef unsigned long long* next_randoms 
+cdef int* unigram_table
+
+@cython.cdivision(True)
+def init_unigram_table(word_list, freq, int train_words):
+    global unigram_table
+    #cdef int* unigram_table
+    cdef int table_size = int(1e8)
+    cdef int a, idx, vocab_size 
+    cdef double power = 0.75
+    cdef double d1
+    cdef double train_words_pow = pow(train_words, power)
+    unigram_table = <int *>malloc(table_size * sizeof(int));
+    idx = 0
+    vocab_size = len(word_list)
+
+    d1 = pow(freq[ word_list[idx] ], power) / train_words_pow;
+    for a in range(table_size):
+        unigram_table[a] = idx
+        if (<double>a / table_size) > d1:
+            idx += 1
+            d1 += pow(freq[ word_list[idx] ], power) / train_words_pow;
+        if idx >= vocab_size:
+            idx = vocab_size - 1;
+    #return [ unigram_table[a] for a in range(table_size) ]
+    return <uintptr_t>unigram_table
+
+def test_ptr(uintptr_t ptr_val):
+    #global unigram_table
+    cdef int* unigram_table
+    unigram_table = <int*>ptr_val
+    return [ unigram_table[a] for a in range(int(1e8)) ]
+    #pass
+
+#cdef uniform():
+#    return <double> rand() / RAND_MAX
 
 #def cbow_producer(sent_id, int sent_id_len, int window, int negative, int vocab_size):
+#def cbow_producer(sent_id, int sent_id_len, neg_sample_table, int window, int negative, int vocab_size, int batch_size):
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
-def cbow_producer(sent_id, int sent_id_len, int window, int negative, int vocab_size, int batch_size):
-    cdef int i,j,n,q,r
+def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int negative, int vocab_size, int batch_size):
+    cdef int i,j,t,n,q,r
     cdef int ctx_count
     #cdef np.ndarray data = np.zeros([sent_id_len,2*window+1+negative], dtype=np.int64)
     cdef long[:,:] data = np.zeros([sent_id_len,2*window+1+negative], dtype=np.int64)
-    cdef np.ndarray neg_indices = np.random.random_integers(0, vocab_size, (sent_id_len, negative))
+    #cdef np.ndarray neg_indices = np.random.random_integers(0, vocab_size, (sent_id_len, negative))
+    #cdef long[:,:] neg_indices = np.random.random_integers(0, vocab_size, (sent_id_len, negative))
+    cdef int* unigram_table
+    unigram_table = <int*>ptr_val
 
     for i in range(sent_id_len):
         ctx_count = 0
@@ -27,8 +72,19 @@ def cbow_producer(sent_id, int sent_id_len, int window, int negative, int vocab_
         data[i, 2*window] = sent_id[i]
 
         # negative sampling
-        for n in range(negative):
-            data[i, 2*window+n] = neg_indices[i,n]
+        n = 0
+        while n < negative:
+            t = unigram_table[ <int>(<double> rand() / RAND_MAX * 1e8) ]
+            if t == sent_id[i]:
+                continue
+
+            data[i, 2*window+n] = t
+            n += 1
+        #print(unigram_table[11694980])
+        #for n in range(negative):    
+            #data[i, 2*window+n] = 0
+        #    data[i, 2*window+n] = unigram_table[ <int>(<double> rand() / RAND_MAX * 1e8) ]
+        #print("%")
     #return data
 
     # batch generator 
