@@ -34,6 +34,7 @@ parser.add_argument("--min_count", type=int, default=5, help="minimum frequency 
 parser.add_argument("--processes", type=int, default=4, help="number of processes")
 parser.add_argument("--num_workers", type=int, default=6, help="number of workers for data processsing")
 parser.add_argument("--iter", type=int, default=5, help="number of iterations")
+parser.add_argument("--lr", type=float, default=-1.0, help="initial learning rate")
 parser.add_argument("--batch_size", type=int, default=100, help="(max) batch size")
 parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
 parser.add_argument("--output_ctx", action='store_true', default=False, help="output context embeddings")
@@ -92,18 +93,6 @@ class CBOWMean(torch.autograd.Function):
         x, = ctx.saved_variables
         return g.expand_as(x), None
 
-class MySigmoid(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input):
-        cond1 = (input > 6.0).float()
-        cond2 = (input > -6.0).float()
-        ret = cond1 + (1-cond1) * input.sigmoid()
-        ret = cond2 * ret 
-        return ret
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output
-
 class CBOW(nn.Module):
     def __init__(self, args):
         super(CBOW, self).__init__()
@@ -114,7 +103,6 @@ class CBOW(nn.Module):
         self.emb1_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.window = args.window
         self.negative = args.negative
-        self.use_cuda = args.cuda
         self.pad_idx = args.vocab_size
 
     def forward(self, data):
@@ -134,22 +122,58 @@ class CBOW(nn.Module):
 
         pos_ips = torch.sum(c_embs[:,0,:] * w_embs, 1)
         neg_ips = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
-        pos_logits = MySigmoid.apply(pos_ips)
-        neg_logits = MySigmoid.apply(neg_ips)
-        neg_logits = neg_logits * neg_mask
+        neg_ips = neg_ips * neg_mask
 
-        pos_loss = torch.sum( 0.5 * torch.pow(1-pos_logits, 2) )
-        neg_loss = torch.sum( 0.5 * torch.pow(0-neg_logits, 2) )
+        # Neg Log Likelihood
+        pos_loss = torch.sum( -F.logsigmoid(pos_ips) )
+        neg_loss = torch.sum( -F.logsigmoid(-neg_ips) )
+
+        return pos_loss + neg_loss
+
+class SG(nn.Module):
+    def __init__(self, args):
+        super(SG, self).__init__()
+        self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
+        self.emb1_lookup = nn.Embedding(args.vocab_size, args.size, sparse=True)
+        self.emb0_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
+        self.emb0_lookup.weight.data[args.vocab_size].fill_(0)
+        self.emb1_lookup.weight.data.zero_()
+        self.window = args.window
+        self.negative = args.negative
+        self.pad_idx = args.vocab_size
+
+    def forward(self, data):
+        self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
+
+        word_idx = data[:, 0]
+        ctx_idx = data[:, 1]
+        neg_indices = data[:, 2:2+self.negative]
+        neg_mask = data[:, 2+self.negative:].float()
+
+        w_embs = self.emb0_lookup(word_idx)
+        c_embs = self.emb1_lookup(ctx_idx)
+        n_embs = self.emb1_lookup(neg_indices)
+
+        pos_ips = torch.sum(w_embs * c_embs, 1)
+        neg_ips = torch.bmm(n_embs, torch.unsqueeze(w_embs,1).permute(0,2,1))[:,:,0]
+        neg_ips = neg_ips * neg_mask
+
+        # Neg Log Likelihood
+        pos_loss = torch.sum( -F.logsigmoid(pos_ips) )
+        neg_loss = torch.sum( -F.logsigmoid(-neg_ips) )
 
         return pos_loss + neg_loss
 
 # Initialize model.
 def init_net(args):
     if args.cbow == 1:
-        vars(args)['lr'] = 0.05
+        if args.lr == -1.0:
+            vars(args)['lr'] = 0.05
         return CBOW(args)
     elif args.cbow == 0:
-        pass
+        if args.lr == -1.0:
+            vars(args)['lr'] = 0.025
+        return SG(args)
 
 # Training
 def train_process_worker(sent_queue, data_queue, word2idx, freq, table_ptr_val, args):
@@ -184,9 +208,8 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, table_ptr_val, 
             for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
                 data_queue.put(chunk)
         elif args.cbow == 0: # train skipgram
-            pass
-            #data = data_producer.sg_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
-            #data_queue.put(data)
+            for chunk in data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
+                data_queue.put(data)
         #print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
 
 def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, table_ptr_val, args):
@@ -254,8 +277,6 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
     for w in workers:
         w.join()
 
-#def train_process(p_id, word_count_actual, word2idx, freq, neg_sample_table, args, model, optimizer):
-#def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model, optimizer):
 def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     sent_queue = mp.SimpleQueue()
     data_queue = mp.SimpleQueue()
@@ -305,10 +326,6 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 optimizer.zero_grad()
 
                 loss = model(data)
-                #if np.isnan(loss.data[0]):
-                #    print(data)
-                #    print("NAN")
-                #    return
                 loss.backward()
                 optimizer.step()
                 #print("@train_process-part2: %f" % (time.process_time() - tStart))
