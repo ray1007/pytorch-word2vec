@@ -18,10 +18,14 @@ def init_unigram_table(word_list, freq, int train_words):
     cdef int a, idx, vocab_size 
     cdef double power = 0.75
     cdef double d1
-    cdef double train_words_pow = pow(train_words, power)
+    #cdef double train_words_pow = pow(train_words, power)
+    cdef double train_words_pow = 0.0
     unigram_table = <int *>malloc(table_size * sizeof(int));
     idx = 0
     vocab_size = len(word_list)
+
+    for word in freq:
+        train_words_pow += pow(freq[word], power)
 
     d1 = pow(freq[ word_list[idx] ], power) / train_words_pow;
     for a in range(table_size):
@@ -46,14 +50,18 @@ def test_ptr(uintptr_t ptr_val):
 
 #def cbow_producer(sent_id, int sent_id_len, int window, int negative, int vocab_size):
 #def cbow_producer(sent_id, int sent_id_len, neg_sample_table, int window, int negative, int vocab_size, int batch_size):
+#def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int negative, int vocab_size, int batch_size):
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
-def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int negative, int vocab_size, int batch_size):
+def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int negative, int vocab_size, int batch_size, unsigned long long next_random):
     cdef int i,j,t,n,q,r
-    cdef int ctx_count
+    cdef int ctx_count, neg_count, actual_window
+    cdef unsigned long long modulo = 281474976710655ULL
     #cdef np.ndarray data = np.zeros([sent_id_len,2*window+1+negative], dtype=np.int64)
-    cdef long[:,:] data = np.zeros([sent_id_len,2*window+1+negative], dtype=np.int64)
+    cdef long[:,:] data = np.zeros([sent_id_len,2*window+1+1+2*negative], dtype=np.int64)
+
+    # [0:2*window]ctx_word_id  [1]ctx_len [1]tar_word_id, [negative]neg_word_id
     #cdef np.ndarray neg_indices = np.random.random_integers(0, vocab_size, (sent_id_len, negative))
     #cdef long[:,:] neg_indices = np.random.random_integers(0, vocab_size, (sent_id_len, negative))
     cdef int* unigram_table
@@ -61,29 +69,46 @@ def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int n
 
     for i in range(sent_id_len):
         ctx_count = 0
-        for j in range(i-window, i+window+1):
+        #ctx_len = 0
+        actual_window = rand() % window + 1
+        #print(actual_window)
+        for j in range(i-actual_window, i+actual_window+1):
             if j < 0 or j >= sent_id_len or j == i:
-                data[i, ctx_count] = vocab_size
-                #continue
+                #data[i, ctx_count] = vocab_size
+                continue
             else:
                 data[i, ctx_count] = sent_id[j]
-            ctx_count += 1
+                #ctx_len += 1
+                ctx_count += 1
+        for j in range(ctx_count, 2*window+1):
+            data[i, j] = vocab_size
 
-        data[i, 2*window] = sent_id[i]
+        data[i, 2*window] = ctx_count
+        data[i, 2*window+1] = sent_id[i]
 
         # negative sampling
-        n = 0
-        while n < negative:
-            t = unigram_table[ <int>(<double> rand() / RAND_MAX * 1e8) ]
+        #n = 0
+        #while n < negative:
+        neg_count = 0
+        for n in range(negative):
+            t= unigram_table[ (next_random >> 16) % int(1e8) ]
+            next_random = (next_random * <unsigned long long>25214903917ULL + 11) & modulo
+            #t = rand() % vocab_size
+            #t = unigram_table[ <int>(<double>(rand()>>16) / RAND_MAX * 1e8) ]
+            #t = unigram_table[ <int>(<double> rand() / RAND_MAX * 1e8) ]
+            #t = unigram_table[ rand() % 1e8 ]
+            #t = rand() % 1e8 ]
             if t == sent_id[i]:
                 continue
 
-            data[i, 2*window+n] = t
-            n += 1
+            data[i, 2*window+2+neg_count] = t
+            neg_count += 1
+
+        # neg mask
+        for n in range(neg_count):
+            data[i, 2*window+2+negative+n] = 1
+
         #print(unigram_table[11694980])
-        #for n in range(negative):    
-            #data[i, 2*window+n] = 0
-        #    data[i, 2*window+n] = unigram_table[ <int>(<double> rand() / RAND_MAX * 1e8) ]
         #print("%")
     #return data
 
@@ -104,16 +129,19 @@ def write_embs(str fn, word_list, float[:,:] embs, int vocab_size, int dim):
     #out_f.write('</s>\t')
     with open(fn, 'w') as out_f:
         out_f.write('%d\t%d\n' % (vocab_size+1, dim));
+        #out_f.write('%d\t%d\n' % (vocab_size, dim));
 
         out_f.write('</s>\t')
         for j in range(dim):
-            out_f.write( '%.18f\t' % embs[vocab_size, j] )
+            #out_f.write( '%.18f\t' % embs[vocab_size, j] )
+            out_f.write( '%.6f\t' % embs[vocab_size, j] )
         out_f.write('\n')
 
         for i in range(vocab_size):
             out_f.write('%s\t' % word_list[i])
             for j in range(dim):
-                out_f.write( '%.18f\t' % embs[i, j] )
+                #out_f.write( '%.18f\t' % embs[i, j] )
+                out_f.write( '%.6f\t' % embs[i, j] )
             out_f.write('\n')
         
 

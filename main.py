@@ -78,65 +78,80 @@ def build_vocab(args):
     vars(args)['vocab_size'] = len(word2idx)
     vars(args)['train_words'] = word_count
 
-    #if args.negative > 0:
-    #    neg_sample_table = data_producer.init_unigram_table(word_list, freq, word_count)
-        #pdb.set_trace()
-
-    #return word2idx, word_list, freq, neg_sample_table
     return word2idx, word_list, freq
+
+class CBOWMean(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, lens):
+        ctx.save_for_backward(x)
+        x = torch.sum(x, 1, keepdim=True)
+        x = x.permute(1,2,0) / lens
+        return x.permute(2,0,1)
+    @staticmethod
+    def backward(ctx, g):
+        x, = ctx.saved_variables
+        return g.expand_as(x), None
+
+class MySigmoid(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input):
+        cond1 = (input > 6.0).float()
+        cond2 = (input > -6.0).float()
+        ret = cond1 + (1-cond1) * input.sigmoid()
+        ret = cond2 * ret 
+        return ret
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
 
 class CBOW(nn.Module):
     def __init__(self, args):
         super(CBOW, self).__init__()
-        self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, sparse=True)
-        self.emb1_lookup = nn.Embedding(args.vocab_size+1, args.size, sparse=True)
+        self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
+        self.emb1_lookup = nn.Embedding(args.vocab_size, args.size, sparse=True)
         self.emb0_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
+        self.emb0_lookup.weight.data[args.vocab_size].fill_(0)
         self.emb1_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.window = args.window
+        self.negative = args.negative
         self.use_cuda = args.cuda
+        self.pad_idx = args.vocab_size
 
     def forward(self, data):
+        self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
+
         ctx_indices = data[:, 0:2*self.window]
-        word_idx = data[:, 2*self.window]
-        neg_indices = data[:, 2*self.window+1:]
+        ctx_lens = data[:, 2*self.window].float()
+        word_idx = data[:, 2*self.window+1]
+        neg_indices = data[:, 2*self.window+2:2*self.window+2+self.negative]
+        neg_mask = data[:, 2*self.window+2+self.negative:].float()
 
         c_embs = self.emb0_lookup(ctx_indices)
         w_embs = self.emb1_lookup(word_idx)
         n_embs = self.emb1_lookup(neg_indices)
-        if not self.use_cuda:
-            c_embs = c_embs.cuda()
-            w_embs = w_embs.cuda()
-            n_embs = n_embs.cuda()
-        c_embs = torch.mean(c_embs, 1, keepdim=True)
 
-        #pos_logits = torch.sum(c_embs[:,0,:] * w_embs, 1, keepdim=True)
-        pos_logits = torch.sum(c_embs[:,0,:] * w_embs, 1)
-        neg_logits = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
-        #print(pos_logits.size())
-        #print(neg_logits.size())
+        c_embs = CBOWMean.apply(c_embs, ctx_lens)
 
+        pos_ips = torch.sum(c_embs[:,0,:] * w_embs, 1)
+        neg_ips = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
+        pos_logits = MySigmoid.apply(pos_ips)
+        neg_logits = MySigmoid.apply(neg_ips)
+        neg_logits = neg_logits * neg_mask
 
-        #return torch.cat((pos_logits, neg_logits), 1)
-        ones = Variable(torch.ones(pos_logits.data.size()).cuda(), requires_grad=False) 
-        pos_loss = torch.sum( ones- F.sigmoid(pos_logits) )
-        neg_loss = torch.sum( torch.sum(-1 * F.sigmoid(neg_logits), 1) )
+        pos_loss = torch.sum( 0.5 * torch.pow(1-pos_logits, 2) )
+        neg_loss = torch.sum( 0.5 * torch.pow(0-neg_logits, 2) )
+
         return pos_loss + neg_loss
-
-
-#class Word2vec(nn.Module):
-
 
 # Initialize model.
 def init_net(args):
     if args.cbow == 1:
         vars(args)['lr'] = 0.05
-        #vars(args)['lr'] = 0.0005
         return CBOW(args)
     elif args.cbow == 0:
         pass
 
 # Training
-#def train_process_worker(sent_queue, data_queue, word2idx, freq, neg_sample_table, args):
 def train_process_worker(sent_queue, data_queue, word2idx, freq, table_ptr_val, args):
     #print("#")
     while True:
@@ -145,67 +160,35 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, table_ptr_val, 
             data_queue.put(None)
             break
 
-        #print(sent)
-        sent_id = []
-        #tStart = time.process_time()
         # subsampling
+        sent_id = []
         if args.sample != 0:
             sent_len = len(sent)
             i = 0
             while i < sent_len:
                 word = sent[i]
                 f = freq[word] / args.train_words
-                pb = np.sqrt(f / args.sample + 1) * args.sample / f;
+                pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
 
-                if pb < np.random.random_sample():
-                    del sent[i]
-                    sent_len -= 1
-                else:
-                    i += 1
+                if pb > np.random.random_sample():
                     sent_id.append( word2idx[word] )
-        if len(sent_id) == 0:
+                i += 1
+        if len(sent_id) < 2:
             continue
+
         #print("@train_pc_worker-part1: %f" % (time.process_time() - tStart))
         #tStart = time.process_time()
 
-        # train cbow architecture
-        if args.cbow == 1:
-            #for chunk in data_producer.cbow_producer(sent_id, len(sent_id), neg_sample_table, args.window, args.negative, args.vocab_size, args.batch_size):
-            #print("$")
-            #for chunk in data_producer.cbow_producer(sent_id, len(sent_id), args.table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size):
-            for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size):
-                if chunk.shape[0] == 0:
-                    print(len(sent_id))
-                #print(chunk[0]) 
+        next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
+        if args.cbow == 1: # train CBOW
+            for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
                 data_queue.put(chunk)
-            '''
-            data = data_producer.cbow_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
-            n_chunks = int((data.shape[0] - args.batch_size) / args.batch_size) + 1
-            n_chunks = data.shape[0] // args.batch_size + 1
-
-            for chunk in np.array_split(data, n_chunks):
-                data_queue.put(chunk)
-            '''
-            #data_queue.put(data)
-        elif args.cbow == 0:
+        elif args.cbow == 0: # train skipgram
+            pass
             #data = data_producer.sg_producer(sent_id, len(sent_id), args.window, args.negative, args.vocab_size)
             #data_queue.put(data)
-            for i in range(len(sent)):
-                word_idx = word2idx[ sent[i] ]
-                for j in range(i-args.window, i+args.window+1):
-                    if j < 0 or j >= len(sent) or j == i:
-                        continue
-                    ctx_idx = word2idx[ sent[j] ]
-                    # data = (word_idx, ctx_idx)
-                    data_queue.put((word_idx, ctx_idx, 1))
-
-                    # negative sampling
-                    for n in range(args.negative):
-                        neg_idx = np.random.randint(args.vocab_size)
-                        data_queue.put((word_idx, neg_idx, 0))
         #print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
 
-#def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, neg_sample_table, args):
 def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, table_ptr_val, args):
     train_file = open(args.train)
     file_pos = args.file_size / args.processes * p_id
@@ -259,13 +242,8 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
                     with word_count_actual.get_lock():
                         word_count_actual.value += word_cnt - last_word_cnt
                     last_word_cnt = word_cnt
-                #sys.stdout.write("Progess: %0.2f\r" % ( 100- (float(end_pos - current_pos) / chunk_size * 100)))
-                #sys.stdout.write("Progess: %0.2f, Words/sec: %f\r" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
-                #sys.stdout.flush()
+
                 sentence.clear()
-
-                #print("Progess: %0.2f, Words/sec: %f" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
-
             else:
                 prev += s
         with word_count_actual.get_lock():
@@ -277,16 +255,16 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
         w.join()
 
 #def train_process(p_id, word_count_actual, word2idx, freq, neg_sample_table, args, model, optimizer):
-def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model, optimizer):
-    #sent_queue = mp.SimpleQueue()
-    #data_queue = mp.SimpleQueue()
-    sent_queue = queue.Queue()
-    data_queue = queue.Queue()
+#def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model, optimizer):
+def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
+    sent_queue = mp.SimpleQueue()
+    data_queue = mp.SimpleQueue()
+
+    optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
     if args.negative > 0:
         table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
-    #t = mp.Process(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, neg_sample_table, args))
-    #t = mp.Process(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, args))
+
     t = threading.Thread(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, table_ptr_val, args))
     t.start()
 
@@ -309,8 +287,8 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                     lr = 0.0001 * args.lr 
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = lr
-                #print(lr)
-                sys.stdout.write("Alpha: %0.4f, Progess: %0.2f, Words/sec: %f\r" % (lr, word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
+
+                sys.stdout.write("\rAlpha: %0.8f, Progess: %0.2f, Words/sec: %f" % (lr, word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
                 sys.stdout.flush()
                 prev_word_cnt = word_count_actual.value
 
@@ -327,10 +305,13 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 optimizer.zero_grad()
 
                 loss = model(data)
+                #if np.isnan(loss.data[0]):
+                #    print(data)
+                #    print("NAN")
+                #    return
                 loss.backward()
                 optimizer.step()
                 #print("@train_process-part2: %f" % (time.process_time() - tStart))
-    #print('@train_process: got %d data' % cnt)
 
     t.join()
     #print("@train_process: end")
@@ -345,28 +326,20 @@ if __name__ == '__main__':
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
 
-    #word2idx, word_list, freq, table_ptr_val = build_vocab(args)
     word2idx, word_list, freq = build_vocab(args)
-    #vars(args)['table_ptr_val'] = table_ptr_val
-    #pdb.set_trace()
-    #neg_sample_table = mp.Array('i', neg_sample_table)
-    #pdb.set_trace()
 
     word_count_actual = mp.Value('i', 0)
     
-    #data_producer.init_rng(args.processes)
-
     model = init_net(args)
+    model.share_memory()
     if args.cuda:
         model.cuda()
-    #loss_fn = nn.BCEWithLogitsLoss()
-    optimizer = optim.SGD(model.parameters(), lr=args.lr)
-    #pdb.set_trace()
-
+    
     vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
-        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model, optimizer))
+        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model))
+        #p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model, optimizer))
         #p = threading.Thread(target=train_process, args=(p_id, word_count_actual, word2idx, freq, args, model, optimizer))
         p.start()
         processes.append(p)
@@ -374,7 +347,6 @@ if __name__ == '__main__':
     for p in processes:
         p.join()
 
-    tStart = time.process_time()
     # output vectors
     if args.cuda:
         embs = model.emb0_lookup.weight.data.cpu().numpy()
@@ -382,5 +354,5 @@ if __name__ == '__main__':
         embs = model.emb0_lookup.weight.data.numpy()
 
     data_producer.write_embs(args.output, word_list, embs, args.vocab_size, args.size)
-    print("@output: %f" % (time.process_time() - tStart))
+    print("")
 
