@@ -9,7 +9,7 @@ The aim of this project is to build a model for neural network based word embedd
 
 ### Usage:
 - `python3 setup.py build_ext --inplace`
-- `CUDA_VISIBLE_DEVICES=<device_id> ./main.py --cuda --train <your_corpus.txt> --output --iters --processes`
+- `[CUDA_VISIBLE_DEVICES=<device_id>] ./main.py --cuda --train <your_corpus.txt> --output --iters --processes`
 - `./main.py --train <your_corpus.txt>`
 
 ### Benchmarking:
@@ -38,9 +38,4 @@ When using CUDA with multiprocessing, one has to set the start method to 'spawn 
 - found that using memeory view instead of numpy array in cython is a bit faster.
 
 ### Features to be added:
-- fixed bug in cbow producer
-- evaluation not good. does lr has sth to do woth the performance? or maybe other bug?
-
-- lr anneal
-- random number generator in C (Cython)
 - skip-gram
