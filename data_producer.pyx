@@ -121,7 +121,8 @@ def sg_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int neg
     #   ctx_idx:      [1]
     #   neg_indices:  [negative]
     #   neg_mask:     [negative]
-    cdef long[:,:] data = np.zeros([batch_size, 2+2*negative], dtype=np.int64)
+    #cdef long[:,:] data = np.zeros([batch_size, 2+2*negative], dtype=np.int64)
+    cdef long[:,:] data = np.zeros([sent_id_len*2*window, 2+2*negative], dtype=np.int64)
 
     cdef int* unigram_table
     unigram_table = <int*>ptr_val
@@ -154,13 +155,23 @@ def sg_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int neg
             batch_count += 1 
 
             # if batch_count reaches batch_size 
-            if batch_count >= batch_size:
-                yield data
-                batch_count = 0 
+            #if batch_count >= batch_size:
+            #    yield np.asarray(data)
+            #    batch_count = 0 
 
+    q = batch_count // batch_size
+    r = batch_count % batch_size
+    if q > 0:
+        for i in range(q):
+            yield np.asarray(data[i*batch_size:(i+1)*batch_size, :])
+        if r > 0:
+            yield np.asarray(data[batch_count-r:batch_count, :])
+    else:
+        #yield np.asarray(data)
+        yield np.asarray(data[:batch_count, :])
     # the remaining data 
-    if batch_count > 0:
-        yield data[:batch_count, :]
+    #if batch_count > 0:
+    #    yield np.asarray(data[:batch_count, :])
 
 
 def write_embs(str fn, word_list, float[:,:] embs, int vocab_size, int dim):

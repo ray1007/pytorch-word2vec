@@ -278,10 +278,10 @@ class CBOW(nn.Module):
 class SG(nn.Module):
     def __init__(self, args):
         super(SG, self).__init__()
-        self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
+        self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, sparse=True)
         self.emb1_lookup = nn.Embedding(args.vocab_size, args.size, sparse=True)
         self.emb0_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
-        self.emb0_lookup.weight.data[args.vocab_size].fill_(0)
+        #self.emb0_lookup.weight.data[args.vocab_size].fill_(0)
         self.emb1_lookup.weight.data.zero_()
         self.window = args.window
         self.negative = args.negative
@@ -289,8 +289,6 @@ class SG(nn.Module):
         self.pad_idx = args.vocab_size
 
     def forward(self, data):
-        self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
-
         word_idx = data[:, 0]
         ctx_idx = data[:, 1]
         neg_indices = data[:, 2:2+self.negative]
@@ -469,8 +467,26 @@ if __name__ == '__main__':
                                 data = Variable(torch.LongTensor(chunk), requires_grad=False)
 
                             optimizer.zero_grad()
-                            #pdb.set_trace()
+                            '''
+                            word_idx = data[:, 0]
+                            ctx_idx = data[:, 1]
+                            neg_indices = data[:, 2:2+args.negative]
+                            neg_mask = data[:, 2+args.negative:].float()
 
+                            w_embs = model.emb0_lookup(word_idx)
+                            c_embs = model.emb1_lookup(ctx_idx)
+                            n_embs = model.emb1_lookup(neg_indices)
+
+                            pos_ips = torch.sum(w_embs * c_embs, 1)
+                            neg_ips = torch.bmm(n_embs, torch.unsqueeze(w_embs,2))[:,:,0]
+                            neg_ips = neg_ips * neg_mask
+
+                            # Neg Log Likelihood
+                            pos_loss = torch.sum( -F.logsigmoid(pos_ips) )
+                            neg_loss = torch.sum( -F.logsigmoid(-neg_ips) )
+                            
+                            pdb.set_trace()
+                            '''
                             pos_loss, neg_loss = model(data)
                             loss = pos_loss + neg_loss
                             loss.backward()

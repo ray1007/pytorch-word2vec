@@ -106,7 +106,7 @@ class CBOW(nn.Module):
         self.pad_idx = args.vocab_size
 
     def forward(self, data):
-        self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
+        #self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
 
         ctx_indices = data[:, 0:2*self.window]
         ctx_lens = data[:, 2*self.window].float()
@@ -136,14 +136,14 @@ class SG(nn.Module):
         self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
         self.emb1_lookup = nn.Embedding(args.vocab_size, args.size, sparse=True)
         self.emb0_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
-        self.emb0_lookup.weight.data[args.vocab_size].fill_(0)
+        #self.emb0_lookup.weight.data[args.vocab_size].fill_(0)
         self.emb1_lookup.weight.data.zero_()
         self.window = args.window
         self.negative = args.negative
         self.pad_idx = args.vocab_size
 
     def forward(self, data):
-        self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
+        #self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
 
         word_idx = data[:, 0]
         ctx_idx = data[:, 1]
@@ -209,7 +209,7 @@ def train_process_worker(sent_queue, data_queue, word2idx, freq, table_ptr_val, 
                 data_queue.put(chunk)
         elif args.cbow == 0: # train skipgram
             for chunk in data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
-                data_queue.put(data)
+                data_queue.put(chunk)
         #print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
 
 def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, table_ptr_val, args):
@@ -315,20 +315,25 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 
             #cnt += 1
             #tStart = time.process_time()
+            if args.cuda:
+                data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
+            else:
+                data = Variable(torch.LongTensor(d), requires_grad=False)
+            
             if args.cbow == 1:
-                if args.cuda:
-                    data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
-                else:
-                    data = Variable(torch.LongTensor(d), requires_grad=False)
                 #print("@train_process-part1: %f" % (time.process_time() - tStart))
                 #tStart = time.process_time()
-
                 optimizer.zero_grad()
-
                 loss = model(data)
                 loss.backward()
                 optimizer.step()
+                model.emb0_lookup.weight.data[args.vocab_size].fill_(0)
                 #print("@train_process-part2: %f" % (time.process_time() - tStart))
+            elif args.cbow == 0:
+                optimizer.zero_grad()
+                loss = model(data)
+                loss.backward()
+                optimizer.step()
 
     t.join()
     #print("@train_process: end")
