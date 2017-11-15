@@ -134,6 +134,7 @@ class CBOW(nn.Module):
 
         pos_ips = torch.sum(c_embs[:,0,:] * w_embs, 1)
         neg_ips = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
+        '''
         pos_logits = MySigmoid.apply(pos_ips)
         neg_logits = MySigmoid.apply(neg_ips)
         neg_logits = neg_logits * neg_mask
@@ -144,9 +145,8 @@ class CBOW(nn.Module):
         neg_ips = neg_ips * neg_mask
 
         # Neg Log Likelihood
-        pos_loss = torch.sum( -F.logsigmoid(pos_ips) )
-        neg_loss = torch.sum( -F.logsigmoid(-neg_ips) )
-        '''
+        pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)) )
+        neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
 
         return pos_loss + neg_loss
 
@@ -176,19 +176,19 @@ class SG(nn.Module):
 
         pos_ips = torch.sum(w_embs * c_embs, 1)
         neg_ips = torch.bmm(n_embs, torch.unsqueeze(w_embs,1).permute(0,2,1))[:,:,0]
+        '''
         pos_logits = MySigmoid.apply(pos_ips)
         neg_logits = MySigmoid.apply(neg_ips)
         neg_logits = neg_logits * neg_mask
         pos_loss = torch.sum( 0.5 * torch.pow(1-pos_logits, 2) )
         neg_loss = torch.sum( 0.5 * torch.pow(0-neg_logits, 2) )
 
-        '''
         neg_ips = neg_ips * neg_mask
+        '''
 
         # Neg Log Likelihood
-        pos_loss = torch.sum( -F.logsigmoid(pos_ips) )
-        neg_loss = torch.sum( -F.logsigmoid(-neg_ips) )
-        '''
+        pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)) )
+        neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
 
         return pos_loss + neg_loss
 
