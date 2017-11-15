@@ -93,6 +93,18 @@ class CBOWMean(torch.autograd.Function):
         x, = ctx.saved_variables
         return g.expand_as(x), None
 
+class MySigmoid(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input):
+        cond1 = (input > 6.0).float()
+        cond2 = (input > -6.0).float()
+        ret = cond1 + (1-cond1) * input.sigmoid()
+        ret = cond2 * ret
+        return ret
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
 class CBOW(nn.Module):
     def __init__(self, args):
         super(CBOW, self).__init__()
@@ -122,11 +134,19 @@ class CBOW(nn.Module):
 
         pos_ips = torch.sum(c_embs[:,0,:] * w_embs, 1)
         neg_ips = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
+        pos_logits = MySigmoid.apply(pos_ips)
+        neg_logits = MySigmoid.apply(neg_ips)
+        neg_logits = neg_logits * neg_mask
+        pos_loss = torch.sum( 0.5 * torch.pow(1-pos_logits, 2) )
+        neg_loss = torch.sum( 0.5 * torch.pow(0-neg_logits, 2) )
+
+        '''
         neg_ips = neg_ips * neg_mask
 
         # Neg Log Likelihood
         pos_loss = torch.sum( -F.logsigmoid(pos_ips) )
         neg_loss = torch.sum( -F.logsigmoid(-neg_ips) )
+        '''
 
         return pos_loss + neg_loss
 
@@ -156,11 +176,19 @@ class SG(nn.Module):
 
         pos_ips = torch.sum(w_embs * c_embs, 1)
         neg_ips = torch.bmm(n_embs, torch.unsqueeze(w_embs,1).permute(0,2,1))[:,:,0]
+        pos_logits = MySigmoid.apply(pos_ips)
+        neg_logits = MySigmoid.apply(neg_ips)
+        neg_logits = neg_logits * neg_mask
+        pos_loss = torch.sum( 0.5 * torch.pow(1-pos_logits, 2) )
+        neg_loss = torch.sum( 0.5 * torch.pow(0-neg_logits, 2) )
+
+        '''
         neg_ips = neg_ips * neg_mask
 
         # Neg Log Likelihood
         pos_loss = torch.sum( -F.logsigmoid(pos_ips) )
         neg_loss = torch.sum( -F.logsigmoid(-neg_ips) )
+        '''
 
         return pos_loss + neg_loss
 
@@ -301,11 +329,11 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
             if none_cnt >= args.num_workers:
                 break
         else:
-            # lr anneal & output    
+            # lr anneal & output
             if word_count_actual.value - prev_word_cnt > 10000:
                 lr = args.lr * (1 - word_count_actual.value / (args.iter * args.train_words))
                 if lr < 0.0001 * args.lr:
-                    lr = 0.0001 * args.lr 
+                    lr = 0.0001 * args.lr
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = lr
 
@@ -319,7 +347,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
             else:
                 data = Variable(torch.LongTensor(d), requires_grad=False)
-            
+
             if args.cbow == 1:
                 #print("@train_process-part1: %f" % (time.process_time() - tStart))
                 #tStart = time.process_time()
@@ -351,12 +379,12 @@ if __name__ == '__main__':
     word2idx, word_list, freq = build_vocab(args)
 
     word_count_actual = mp.Value('i', 0)
-    
+
     model = init_net(args)
     model.share_memory()
     if args.cuda:
         model.cuda()
-    
+
     vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
