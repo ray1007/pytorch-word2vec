@@ -67,7 +67,7 @@ def build_vocab(args):
         word_count += 1
         if word_count % 10000 == 0:
             sys.stdout.write('%d\r' % len(vocab))
-    freq = {k:v for k,v in vocab.items() if v > args.min_count}
+    freq = {k:v for k,v in vocab.items() if v >= args.min_count}
     word_count = sum([freq[k] for k in freq])
     word_list = sorted(freq, key=freq.get, reverse=True)
     word2idx = {}
