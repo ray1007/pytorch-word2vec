@@ -260,24 +260,36 @@ if __name__ == '__main__':
                     next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
                     
                     # train 
-                    for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
-                        #t_start = time.process_time()
-                        # feed to model
-                        if args.cuda:
-                            data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
-                        else:
-                            data = Variable(torch.LongTensor(chunk), requires_grad=False)
-                        # 0.002s
-                        optimizer.zero_grad()
-                            
-                        pos_loss, neg_loss = model(data)
-                        loss = pos_loss + neg_loss
-                        loss.backward()
-                        optimizer.step()
-                        model.global_embs.weight.data[args.vocab_size].fill_(0)
-                        #print("train stage 1: ", time.process_time() - t_start)
-                        #print("loop: ", time.process_time() - t_start)
+                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                    chunk_pos = 0
+                    while chunk_pos < chunk.shape[0]:
+                        remain_space = args.batch_size - batch_count
+                        remain_chunk = chunk.shape[0] - chunk_pos 
 
+                        if remain_chunk < remain_space: 
+                            take_from_chunk = remain_chunk
+                        else:
+                            take_from_chunk = remain_space
+                            
+                        batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                        batch_count += take_from_chunk
+
+                        if batch_count == args.batch_size:
+                            # feed to model
+                            if args.cuda:
+                                data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                            else:
+                                data = Variable(torch.LongTensor(chunk), requires_grad=False)
+                            optimizer.zero_grad()
+                            pos_loss, neg_loss = model(data)
+                            loss = pos_loss + neg_loss
+                            loss.backward()
+                            optimizer.step()
+                            model.global_embs.weight.data[args.vocab_size].fill_(0)
+                                
+                            batch_count = 0
+                        chunk_pos += take_from_chunk
+                            
                 word_cnt += len(sentence)
                 sentence_cnt += 1
                 sentence.clear()
@@ -349,50 +361,52 @@ if __name__ == '__main__':
                     next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
                     
                     # train 
-                    for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, 0, args.vocab_size, args.batch_size, next_random):
-                        #t_start = time.process_time()
-                        # feed to model
-                        if args.cuda:
-                            data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, 0, args.vocab_size, args.batch_size, next_random)
+                    chunk_pos = 0
+                    while chunk_pos < chunk.shape[0]:
+                        remain_space = args.batch_size - batch_count
+                        remain_chunk = chunk.shape[0] - chunk_pos 
+
+                        if remain_chunk < remain_space: 
+                            take_from_chunk = remain_chunk
                         else:
-                            data = Variable(torch.LongTensor(chunk), requires_grad=False)
-                        sense2idx, sense_embs = model.get_possible_sense_embs(chunk[:, 2*args.window+1].tolist())
-                        zero = np.zeros((chunk.shape[0], args.size),'float32')
-                        #print("get tensor: ", time.process_time() - t_start)
+                            take_from_chunk = remain_space
+                            
+                        batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                        batch_count += take_from_chunk
 
-                        #t_start = time.process_time()
-                        # get type_idx from chunk, and do sense selection here.
-                        context_feats = model.get_context_feats(data[:, :2*args.window])             
-                        context_feats = context_feats.cpu().data.numpy()
-                        #print("ctx_feat: ", time.process_time() - t_start)
-                        #t_start = time.process_time()
-                        #type_ids = data[:, -1:].cpu().data.numpy()
-
-                        chunk, created_sense_embs = data_producer.create_n_select_sense(chunk, context_feats, sense2idx, 
-                                                        np.concatenate((sense_embs,zero),0), model.word2sense, chunk.shape[0], 
-                                                        sense_embs.shape[0], args.size, args.window, args.delta, model.n_senses)
-                        #print("create_n_select: ", time.process_time() - t_start)
-
-                        # update n_senses & sense_embs
-                        #t_start = time.process_time()
-                        model.add_sense_embs(created_sense_embs)
-                        #print("add_sense: ", time.process_time() - t_start)
-
-                        #t_start = time.process_time()
-                        # feed selected_sense_ids to model
-                        if chunk.shape[0] > 0:
+                        if batch_count == args.batch_size:
                             if args.cuda:
                                 data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
                             else:
                                 data = Variable(torch.LongTensor(chunk), requires_grad=False)
+                            
+                            sense2idx, sense_embs = model.get_possible_sense_embs(chunk[:, 2*args.window+1].tolist())
+                            zero = np.zeros((chunk.shape[0], args.size),'float32')
+                            
+                            context_feats = model.get_context_feats(data[:, :2*args.window])             
+                            context_feats = context_feats.cpu().data.numpy()
+                            
+                            chunk, created_sense_embs = data_producer.create_n_select_sense(chunk, context_feats, sense2idx, 
+                                                            np.concatenate((sense_embs,zero),0), model.word2sense, chunk.shape[0], 
+                                                            sense_embs.shape[0], args.size, args.window, args.delta, model.n_senses)
+                            model.add_sense_embs(created_sense_embs)
+                            
+                            # feed selected_sense_ids to model
+                            if chunk.shape[0] > 0:
+                                if args.cuda:
+                                    data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                                else:
+                                    data = Variable(torch.LongTensor(chunk), requires_grad=False)
                          
-                            optimizer.zero_grad()   
-                            loss = model(data, False)
-                            loss.backward()
-                            optimizer.step()
-                        #print("train: ", time.process_time() - t_start)
-                        #pdb.set_trace()
-                        
+                                optimizer.zero_grad()   
+                                loss = model(data, False)
+                                loss.backward()
+                                optimizer.step()
+                                model.emb0_lookup.weight.data[self.pad_idx].fill_(0)
+                                
+                            batch_count = 0
+                        chunk_pos += take_from_chunk
 
                 word_cnt += len(sentence)
                 sentence_cnt += 1
@@ -409,7 +423,6 @@ if __name__ == '__main__':
 
                     sys.stdout.write("\rAlpha: %0.8f, Progess: %0.2f, Words/sec: %f" % (lr, word_count_actual / args.train_words * 100, word_count_actual / (time.monotonic() - args.t_start)))
                     sys.stdout.flush()
-                    #print(model.emb0_lookup.weight.data.cpu().numpy()[0,:20])
             else:
                 prev += s
         word_count_actual += word_cnt - last_word_cnt
@@ -466,35 +479,53 @@ if __name__ == '__main__':
                     next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
                     
                     # train 
-                    for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
-                        # feed to model
-                        if args.cuda:
-                            data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                    chunk_pos = 0
+                    while chunk_pos < chunk.shape[0]:
+                        remain_space = args.batch_size - batch_count
+                        remain_chunk = chunk.shape[0] - chunk_pos 
+
+                        if remain_chunk < remain_space: 
+                            take_from_chunk = remain_chunk
                         else:
-                            data = Variable(torch.LongTensor(chunk), requires_grad=False)
-                        
-                        type_ids = chunk[:, 2*args.window+1:2*args.window+2+2*args.negative]
-                        type_ids = np.reshape(type_ids, (type_ids.shape[0] * type_ids.shape[1]))
-                        sense2idx, sense_embs = model.get_possible_sense_embs(type_ids.tolist())
-
-                        # get type_idx from chunk, and do sense selection here.
-                        context_feats = model.get_context_feats(data[:, :2*args.window])             
-                        context_feats = context_feats.cpu().data.numpy()
-
-                        chunk = data_producer.select_sense(chunk, context_feats, sense2idx, sense_embs,
-                                        model.word2sense, chunk.shape[0], args.size, args.window, args.negative)
-
-                        if args.cuda:
-                            data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
-                        else:
-                            data = Variable(torch.LongTensor(chunk), requires_grad=False)
-                         
-                        optimizer.zero_grad()   
-                        loss = model(data, False)
-                        loss.backward()
-                        optimizer.step()
-                        #pdb.set_trace()
+                            take_from_chunk = remain_space
                             
+                        batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                        batch_count += take_from_chunk
+
+                        if batch_count == args.batch_size:
+
+                            # feed to model
+                            if args.cuda:
+                                data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                            else:
+                                data = Variable(torch.LongTensor(chunk), requires_grad=False)
+                        
+                            type_ids = chunk[:, 2*args.window+1:2*args.window+2+2*args.negative]
+                            type_ids = np.reshape(type_ids, (type_ids.shape[0] * type_ids.shape[1]))
+                            sense2idx, sense_embs = model.get_possible_sense_embs(type_ids.tolist())
+
+                            # get type_idx from chunk, and do sense selection here.
+                            context_feats = model.get_context_feats(data[:, :2*args.window])             
+                            context_feats = context_feats.cpu().data.numpy()
+
+                            chunk = data_producer.select_sense(chunk, context_feats, sense2idx, sense_embs,
+                                            model.word2sense, chunk.shape[0], args.size, args.window, args.negative)
+
+                            if args.cuda:
+                                data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                            else:
+                                data = Variable(torch.LongTensor(chunk), requires_grad=False)
+                         
+                            optimizer.zero_grad()   
+                            loss = model(data, False)
+                            loss.backward()
+                            optimizer.step()
+                            model.global_embs.weight.data[args.vocab_size].fill_(0)
+                            
+                            batch_count = 0
+                        chunk_pos += take_from_chunk
+
                 word_cnt += len(sentence)
                 sentence_cnt += 1
                 sentence.clear()

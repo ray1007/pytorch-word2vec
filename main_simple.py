@@ -122,7 +122,7 @@ class mCBOW(nn.Module):
         self.pad_idx = args.vocab_size
 
     def forward(self, data):
-        self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
+        #self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
 
         ctx_indices = data[:, 0:2*self.window]
         ctx_lens = data[:, 2*self.window].float()
@@ -414,6 +414,7 @@ if __name__ == '__main__':
                                 loss = pos_loss + neg_loss
                                 loss.backward()
                                 optimizer.step()
+                                model.emb0_lookup.weight.data[self.pad_idx].fill_(0)
                                 
                                 batch_count = 0
 
