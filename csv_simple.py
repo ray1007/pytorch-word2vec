@@ -220,6 +220,8 @@ if __name__ == '__main__':
     for it in range(args.iter):
         train_file.seek(0, 0)
 
+        batch_count = 0
+        batch_placeholder = np.zeros((args.batch_size, 2*args.window+2+2*args.negative), 'int64')
         sentence_cnt = 0
         last_word_cnt = 0
         word_cnt = 0
