@@ -77,7 +77,7 @@ cdef int get_unigram_table_at_idx(int* arr, unsigned long long next_random):
 @cython.cdivision(True)
 def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int negative, int vocab_size, int batch_size, unsigned long long next_random, bint dynamic_window=True):
     cdef int i,j,tar_id,pos,t,n,q,r
-    cdef int ctx_pos, ctx_count, neg_count, actual_window
+    cdef int ctx_count, neg_count, actual_window
     cdef unsigned long long modulo = 281474976710655ULL
     
     # columns of data and its length:  
@@ -92,7 +92,6 @@ def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int n
     unigram_table = <int*>ptr_val
 
     for i in range(sent_id_len):
-        #ctx_pos = 0
         ctx_count = 0
         actual_window = rand() % window + 1 if dynamic_window else window
         tar_id = sent_id[i]
@@ -116,19 +115,7 @@ def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int n
         for j in range(i+1+actual_window, i+1+window):
             pos = j - (i-window) - 1
             data[i, pos] = vocab_size
-        '''
-        for j in range(i-actual_window, i+actual_window+1):
-            if j == i:
-                continue
-            if j < 0 or j >= sent_id_len:
-                data[i, j] = vocab_size
-                #continue
-            else:
-                data[i, ctx_count] = sent_id[j]
-                ctx_count += 1
-        for j in range(ctx_count, 2*window+1):
-            data[i, j] = vocab_size
-        '''
+
         data[i, 2*window] = ctx_count
         data[i, 2*window+1] = tar_id
 
@@ -153,17 +140,7 @@ def cbow_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int n
         for n in range(neg_count):
             data[i, 2*window+2+negative+n] = 1
 
-    # batch generator 
-    q = sent_id_len // batch_size
-    r = sent_id_len % batch_size
-    if q > 0:
-        for i in range(q):
-            yield np.asarray(data[i*batch_size:(i+1)*batch_size, :])
-        if r > 0:
-            yield np.asarray(data[sent_id_len-r:sent_id_len, :])
-    else:
-        yield np.asarray(data)
-
+    return np.asarray(data)
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -210,45 +187,22 @@ def sg_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int neg
                 data[batch_count, 2+negative+n] = 1
 
             batch_count += 1 
-
-            # if batch_count reaches batch_size 
-            #if batch_count >= batch_size:
-            #    yield np.asarray(data)
-            #    batch_count = 0 
-
-    q = batch_count // batch_size
-    r = batch_count % batch_size
-    if q > 0:
-        for i in range(q):
-            yield np.asarray(data[i*batch_size:(i+1)*batch_size, :])
-        if r > 0:
-            yield np.asarray(data[batch_count-r:batch_count, :])
-    else:
-        #yield np.asarray(data)
-        yield np.asarray(data[:batch_count, :])
-    # the remaining data 
-    #if batch_count > 0:
-    #    yield np.asarray(data[:batch_count, :])
-
+    
+    return np.asarray(data)
 
 def write_embs(str fn, word_list, float[:,:] embs, int vocab_size, int dim):
     cdef int i,j
-    #fo = fopen(fn, "rb") 
-    #out_f.write('</s>\t')
     with open(fn, 'w') as out_f:
         out_f.write('%d\t%d\n' % (vocab_size+1, dim));
-        #out_f.write('%d\t%d\n' % (vocab_size, dim));
 
         out_f.write('</s>\t')
         for j in range(dim):
-            #out_f.write( '%.18f\t' % embs[vocab_size, j] )
             out_f.write( '%.6f\t' % embs[vocab_size, j] )
         out_f.write('\n')
 
         for i in range(vocab_size):
             out_f.write('%s\t' % word_list[i])
             for j in range(dim):
-                #out_f.write( '%.18f\t' % embs[i, j] )
                 out_f.write( '%.6f\t' % embs[i, j] )
             out_f.write('\n')
         

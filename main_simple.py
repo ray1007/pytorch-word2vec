@@ -322,33 +322,20 @@ def init_net(args):
 if __name__ == '__main__':
     args = parser.parse_args()
     print("Starting training using file %s" % args.train)
+    
     train_file = open(args.train)
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
 
-    #word2idx, word_list, freq, table_ptr_val = build_vocab(args)
     word2idx, word_list, freq = build_vocab(args)
-    #vars(args)['table_ptr_val'] = table_ptr_val
-    #pdb.set_trace()
-    #neg_sample_table = mp.Array('i', neg_sample_table)
-    #pdb.set_trace()
-
-    #word_count_actual = mp.Value('i', 0)
-    
-    #data_producer.init_rng(args.processes)
-
     model = init_net(args)
     
-    #model.share_memory()
     if args.cuda:
         model.cuda()
 
-    #loss_fn = nn.BCEWithLogitsLoss()
-    #optimizer = optim.SGD(model.parameters(), lr=args.lr)
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
     if args.negative > 0:
         table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
-    #pdb.set_trace()
     
     vars(args)['t_start'] = time.monotonic()
 
@@ -402,95 +389,66 @@ if __name__ == '__main__':
                     
                     # train cbow architecture
                     if args.cbow == 1:
-                        for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
-                            #data_queue.put(chunk)
-                            # feed to model
-                            if args.cuda:
-                                data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                        chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                        chunk_pos = 0
+                        while chunk_pos < chunk.shape[0]:
+                            remain_space = args.batch_size - batch_count
+                            remain_chunk = chunk.shape[0] - chunk_pos 
+
+                            if remain_chunk < remain_space: 
+                                take_from_chunk = remain_chunk
                             else:
-                                data = Variable(torch.LongTensor(chunk), requires_grad=False)
-
-                            optimizer.zero_grad()
-                            ''' 
-                            model.emb0_lookup.weight.data[model.pad_idx].fill_(0)
-
-                            ctx_indices = data[:, 0:2*args.window]
-                            ctx_lens = data[:, 2*args.window].float()
-                            word_idx = data[:, 2*args.window+1]
-                            neg_indices = data[:, 2*args.window+2:2*args.window+2+args.negative]
-                            neg_mask = data[:, 2*args.window+2+args.negative:].float()
-
-                            c_embs = model.emb0_lookup(ctx_indices)
-                            w_embs = model.emb1_lookup(word_idx)
-                            n_embs = model.emb1_lookup(neg_indices)
-
-                            mean_c_embs = CBOWMean.apply(c_embs, ctx_lens)
-
-                            pos_ips = torch.sum(mean_c_embs[:,0,:] * w_embs, 1)
-                            neg_ips = torch.bmm(n_embs, mean_c_embs.permute(0,2,1))[:,:,0]
-                            pos_logits = MySigmoid.apply(pos_ips)
-                            neg_logits = MySigmoid.apply(neg_ips)
-                            neg_logits = neg_logits * neg_mask
-
-                            c_embs.retain_grad()
-                            w_embs.retain_grad()
-                            n_embs.retain_grad()
-                            pos_ips.retain_grad()
-                            neg_ips.retain_grad()
-                            pos_logits.retain_grad()
-                            neg_logits.retain_grad()
+                                take_from_chunk = remain_space
                             
-                            mpos_loss = torch.mean( 0.5 * torch.pow(1-pos_logits, 2) )
-                            mneg_loss = torch.mean( torch.sum(0.5 * torch.pow(0-neg_logits, 2), 1) )
-                            mloss = mpos_loss + mneg_loss
-                            '''
-                            
-                            #if word_idx.data[0] == 0:
-                            #    pdb.set_trace()
-                            #if pos_logits.data[0] == 1 or 0 in (neg_logits+(1-neg_mask)).data[0]:
-                            #    pdb.set_trace()
+                            batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                            batch_count += take_from_chunk
 
-                            #if chunk[0,-1] == 0:
-                            #    pdb.set_trace()
+                            if batch_count == args.batch_size:
+                                # feed to model
+                                if args.cuda:
+                                    data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                                else:
+                                    data = Variable(torch.LongTensor(chunk), requires_grad=False)
+                                optimizer.zero_grad()
+                                pos_loss, neg_loss = model(data)
+                                loss = pos_loss + neg_loss
+                                loss.backward()
+                                optimizer.step()
+                                
+                                batch_count = 0
 
-                            #loss = model(data)
-                            #print("\n\n from nn.module:\n")
-                            pos_loss, neg_loss = model(data)
-                            loss = pos_loss + neg_loss
-                            loss.backward()
-                            optimizer.step()
+                            chunk_pos += take_from_chunk
+
                     elif args.cbow == 0:
-                        for chunk in data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
-                            if args.cuda:
-                                data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                        chunk = data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                        chunk_pos = 0
+                        while chunk_pos < chunk.shape[0]:
+                            remain_space = args.batch_size - batch_count
+                            remain_chunk = chunk.shape[0] - chunk_pos 
+
+                            if remain_chunk < remain_space: 
+                                take_from_chunk = remain_chunk
                             else:
-                                data = Variable(torch.LongTensor(chunk), requires_grad=False)
-
-                            optimizer.zero_grad()
-                            '''
-                            word_idx = data[:, 0]
-                            ctx_idx = data[:, 1]
-                            neg_indices = data[:, 2:2+args.negative]
-                            neg_mask = data[:, 2+args.negative:].float()
-
-                            w_embs = model.emb0_lookup(word_idx)
-                            c_embs = model.emb1_lookup(ctx_idx)
-                            n_embs = model.emb1_lookup(neg_indices)
-
-                            pos_ips = torch.sum(w_embs * c_embs, 1)
-                            neg_ips = torch.bmm(n_embs, torch.unsqueeze(w_embs,2))[:,:,0]
-                            neg_ips = neg_ips * neg_mask
-
-                            # Neg Log Likelihood
-                            pos_loss = torch.sum( -F.logsigmoid(pos_ips) )
-                            neg_loss = torch.sum( -F.logsigmoid(-neg_ips) )
+                                take_from_chunk = remain_space
                             
-                            pdb.set_trace()
-                            '''
-                            pos_loss, neg_loss = model(data)
-                            loss = pos_loss + neg_loss
-                            loss.backward()
-                            optimizer.step()
+                            batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                            batch_count += take_from_chunk
+
+                            if batch_count == args.batch_size:
+                                # feed to model
+                                if args.cuda:
+                                    data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                                else:
+                                    data = Variable(torch.LongTensor(chunk), requires_grad=False)
+
+                                optimizer.zero_grad()
+                                pos_loss, neg_loss = model(data)
+                                loss = pos_loss + neg_loss
+                                loss.backward()
+                                optimizer.step()
+                                batch_count = 0
+
+                            chunk_pos += take_from_chunk
 
                 word_cnt += len(sentence)
                 sentence_cnt += 1
@@ -507,7 +465,6 @@ if __name__ == '__main__':
 
                     sys.stdout.write("\rAlpha: %0.8f, Progess: %0.2f, Words/sec: %f" % (lr, word_count_actual / (args.iter * args.train_words) * 100, word_count_actual / (time.monotonic() - args.t_start)))
                     sys.stdout.flush()
-                    #print(model.emb0_lookup.weight.data.cpu().numpy()[0,:20])
             else:
                 prev += s
         word_count_actual += word_cnt - last_word_cnt

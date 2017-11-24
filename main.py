@@ -204,43 +204,10 @@ def init_net(args):
         return SG(args)
 
 # Training
-def train_process_worker(sent_queue, data_queue, word2idx, freq, table_ptr_val, args):
-    #print("#")
-    while True:
-        sent = sent_queue.get()
-        if sent is None:
-            data_queue.put(None)
-            break
+def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args):
+    if args.negative > 0:
+        table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
 
-        # subsampling
-        sent_id = []
-        if args.sample != 0:
-            sent_len = len(sent)
-            i = 0
-            while i < sent_len:
-                word = sent[i]
-                f = freq[word] / args.train_words
-                pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
-
-                if pb > np.random.random_sample():
-                    sent_id.append( word2idx[word] )
-                i += 1
-        if len(sent_id) < 2:
-            continue
-
-        #print("@train_pc_worker-part1: %f" % (time.process_time() - tStart))
-        #tStart = time.process_time()
-
-        next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
-        if args.cbow == 1: # train CBOW
-            for chunk in data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
-                data_queue.put(chunk)
-        elif args.cbow == 0: # train skipgram
-            for chunk in data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random):
-                data_queue.put(chunk)
-        #print("@train_pc_worker-part2: %f" % (time.process_time() - tStart))
-
-def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, table_ptr_val, args):
     train_file = open(args.train)
     file_pos = args.file_size / args.processes * p_id
     train_file.seek(file_pos, 0)
@@ -254,19 +221,11 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
             train_file.seek(file_pos, 0)
             break
 
-    workers = []
-    for i in range(args.num_workers):
-        #w_id = p_id * args.processes + i,
-        #w = mp.Process(target=train_process_worker, args=(sent_queue, data_queue, word2idx, freq, neg_sample_table, args))
-        #w = mp.Process(target=train_process_worker, args=(sent_queue, data_queue, word2idx, freq, args))
-        w = threading.Thread(target=train_process_worker, args=(sent_queue, data_queue, word2idx, freq, table_ptr_val, args))
-        w.start()
-        workers.append(w)
-
     for it in range(args.iter):
-        #print("iter: %d" % it)
         train_file.seek(file_pos, 0)
 
+        batch_count = 0
+        batch_placeholder = np.zeros((args.batch_size, 2*args.window+2+2*args.negative), 'int64')
         last_word_cnt = 0
         word_cnt = 0
         sentence = []
@@ -287,7 +246,64 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
                     sentence.append(prev)
                 prev = ''
                 if len(sentence) > 0:
-                    sent_queue.put(copy.deepcopy(sentence))
+                    # subsampling
+                    sent_id = []
+                    if args.sample != 0:
+                        sent_len = len(sentence)
+                        i = 0
+                        while i < sent_len:
+                            word = sentence[i]
+                            f = freq[word] / args.train_words
+                            pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
+
+                            if pb > np.random.random_sample():
+                                sent_id.append( word2idx[word] )
+                            i += 1
+                    if len(sent_id) < 2:
+                        continue
+
+                    next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
+                    if args.cbow == 1: # train CBOW
+                        chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                        chunk_pos = 0
+                        while chunk_pos < chunk.shape[0]:
+                            remain_space = args.batch_size - batch_count
+                            remain_chunk = chunk.shape[0] - chunk_pos 
+
+                            if remain_chunk < remain_space: 
+                                take_from_chunk = remain_chunk
+                            else:
+                                take_from_chunk = remain_space
+                            
+                            batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                            batch_count += take_from_chunk
+
+                            if batch_count == args.batch_size:
+                                data_queue.put(batch_placeholder)
+                                batch_count = 0
+
+                            chunk_pos += take_from_chunk
+                    elif args.cbow == 0: # train skipgram
+                        chunk = data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                        chunk_pos = 0
+                        while chunk_pos < chunk.shape[0]:
+                            remain_space = args.batch_size - batch_count
+                            remain_chunk = chunk.shape[0] - chunk_pos 
+
+                            if remain_chunk < remain_space: 
+                                take_from_chunk = remain_chunk
+                            else:
+                                take_from_chunk = remain_space
+                            
+                            batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                            batch_count += take_from_chunk
+
+                            if batch_count == args.batch_size:
+                                data_queue.put(batch_placeholder)
+                                batch_count = 0
+
+                            chunk_pos += take_from_chunk
+     
                 word_cnt += len(sentence)
                 if word_cnt - last_word_cnt > 10000:
                     with word_count_actual.get_lock():
@@ -300,34 +316,23 @@ def train_process_sent_producer(p_id, sent_queue, data_queue, word_count_actual,
         with word_count_actual.get_lock():
             word_count_actual.value += word_cnt - last_word_cnt
 
-    for i in range(args.num_workers):
-        sent_queue.put(None)
-    for w in workers:
-        w.join()
+    data_queue.put(batch_placeholder[:batch_count,:])
+    data_queue.put(None)
 
 def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
-    sent_queue = mp.SimpleQueue()
     data_queue = mp.SimpleQueue()
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
-    if args.negative > 0:
-        table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
-
-    t = threading.Thread(target=train_process_sent_producer, args=(p_id, sent_queue, data_queue, word_count_actual, word2idx, freq, table_ptr_val, args))
+    t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
 
     # get from data_queue and feed to model
-    #cnt = 0
-    none_cnt = 0
     prev_word_cnt = 0
     while True:
-        #try:
         d = data_queue.get()
         if d is None:
-            none_cnt += 1
-            if none_cnt >= args.num_workers:
-                break
+            break
         else:
             # lr anneal & output
             if word_count_actual.value - prev_word_cnt > 10000:
@@ -341,22 +346,17 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 sys.stdout.flush()
                 prev_word_cnt = word_count_actual.value
 
-            #cnt += 1
-            #tStart = time.process_time()
             if args.cuda:
                 data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
             else:
                 data = Variable(torch.LongTensor(d), requires_grad=False)
 
             if args.cbow == 1:
-                #print("@train_process-part1: %f" % (time.process_time() - tStart))
-                #tStart = time.process_time()
                 optimizer.zero_grad()
                 loss = model(data)
                 loss.backward()
                 optimizer.step()
                 model.emb0_lookup.weight.data[args.vocab_size].fill_(0)
-                #print("@train_process-part2: %f" % (time.process_time() - tStart))
             elif args.cbow == 0:
                 optimizer.zero_grad()
                 loss = model(data)
@@ -364,10 +364,8 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 optimizer.step()
 
     t.join()
-    #print("@train_process: end")
 
 if __name__ == '__main__':
-    #set_start_method('spawn')
     set_start_method('forkserver')
 
     args = parser.parse_args()
