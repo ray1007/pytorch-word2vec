@@ -24,7 +24,7 @@ from multiprocessing import set_start_method
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--train", type=str, default="", help="training file")
-parser.add_argument("--output", type=str, default="csv.pth.tar", help="saved model filename")
+parser.add_argument("--save", type=str, default="csv.pth.tar", help="saved model filename")
 parser.add_argument("--size", type=int, default=300, help="word embedding dimension")
 #parser.add_argument("--cbow", type=int, default=1, help="1 for cbow, 0 for skipgram")
 parser.add_argument("--window", type=int, default=5, help="context window size")
@@ -38,6 +38,7 @@ parser.add_argument("--iter", type=int, default=5, help="number of iterations")
 parser.add_argument("--lr", type=float, default=-1.0, help="initial learning rate")
 parser.add_argument("--batch_size", type=int, default=100, help="(max) batch size")
 parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
+parser.add_argument("--multi_proto", action='store_true', default=False, help="True: multi-prototype, False:single-prototype")
 parser.add_argument("--output_ctx", action='store_true', default=False, help="output context embeddings")
 
 
@@ -431,36 +432,37 @@ if __name__ == '__main__':
         p.join()
     del processes
 
-    # stage 2, create new sense in a non-parametric way.
-    # Freeze model paramters except sense_embs, and use only 1 process to prevent race condition
-    model.global_embs.requires_grad = False
-    model.ctx_weight.requires_grad = False
-    vars(args)['stage'] = 2
-    print("\nStage 2")
-    word_count_actual.value = 0
-    vars(args)['t_start'] = time.monotonic()
-    p = mp.Process(target=train_process, args=(0, word_count_actual, word2idx, word_list, freq, args, model))
-    p.start()
-    p.join()
-
-    # stage 3, no more sense creation.
-    model.global_embs.requires_grad = True
-    model.ctx_weight.requires_grad = True
-    vars(args)['stage'] = 3
-    print("\nBegin stage 3")
-    word_count_actual.value = 0
-    vars(args)['t_start'] = time.monotonic()
-    processes = []
-    for p_id in range(args.processes):
-        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model))
+    if args.multi_proto:
+        # stage 2, create new sense in a non-parametric way.
+        # Freeze model paramters except sense_embs, and use only 1 process to prevent race condition
+        model.global_embs.requires_grad = False
+        model.ctx_weight.requires_grad = False
+        vars(args)['stage'] = 2
+        print("\nStage 2")
+        word_count_actual.value = 0
+        vars(args)['t_start'] = time.monotonic()
+        p = mp.Process(target=train_process, args=(0, word_count_actual, word2idx, word_list, freq, args, model))
         p.start()
-        processes.append(p)
-
-    for p in processes:
         p.join()
 
+        # stage 3, no more sense creation.
+        model.global_embs.requires_grad = True
+        model.ctx_weight.requires_grad = True
+        vars(args)['stage'] = 3
+        print("\nBegin stage 3")
+        word_count_actual.value = 0
+        vars(args)['t_start'] = time.monotonic()
+        processes = []
+        for p_id in range(args.processes):
+            p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model))
+            p.start()
+            processes.append(p)
+
+        for p in processes:
+            p.join()
+
     # save model
-    filename = args.output
+    filename = args.save
     if not filename.endswith('.pth.tar'):
         filename += '.pth.tar'
     save_model(filename, model, args, word2idx)
