@@ -297,8 +297,8 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                 prev += s
         with word_count_actual.get_lock():
             word_count_actual.value += word_cnt - last_word_cnt
-
-    data_queue.put(batch_placeholder[:batch_count,:])
+    if batch_count > 0:
+        data_queue.put(batch_placeholder[:batch_count,:])
     data_queue.put(None)
 
 def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
