@@ -90,7 +90,6 @@ class CSV(nn.Module):
 
         self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
-        #self.ctx_weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.ctx_weight.data.normal_(0,1)
 
         self.n_senses = args.vocab_size
@@ -405,7 +404,7 @@ if __name__ == '__main__':
                                 loss = model(data, False)
                                 loss.backward()
                                 optimizer.step()
-                                model.emb0_lookup.weight.data[self.pad_idx].fill_(0)
+                                #model.emb0_lookup.weight.data[self.pad_idx].fill_(0)
                                 
                             batch_count = 0
                         chunk_pos += take_from_chunk
@@ -520,7 +519,7 @@ if __name__ == '__main__':
                                 data = Variable(torch.LongTensor(chunk), requires_grad=False)
                          
                             optimizer.zero_grad()   
-                            loss = model(data, False)
+                            loss = model(data)
                             loss.backward()
                             optimizer.step()
                             model.global_embs.weight.data[args.vocab_size].fill_(0)
@@ -548,6 +547,6 @@ if __name__ == '__main__':
         word_count_actual += word_cnt - last_word_cnt
      
 
-    save_model(model, args)
+    save_model(model, args, word2idx)
     print("")
 

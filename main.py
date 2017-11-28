@@ -204,7 +204,7 @@ def init_net(args):
         return SG(args)
 
 # Training
-def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args):
+def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, word_list, freq, args):
     if args.negative > 0:
         table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
 
@@ -221,11 +221,11 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
             train_file.seek(file_pos, 0)
             break
 
+    batch_count = 0
+    batch_placeholder = np.zeros((args.batch_size, 2*args.window+2+2*args.negative), 'int64')
     for it in range(args.iter):
         train_file.seek(file_pos, 0)
 
-        batch_count = 0
-        batch_placeholder = np.zeros((args.batch_size, 2*args.window+2+2*args.negative), 'int64')
         last_word_cnt = 0
         word_cnt = 0
         sentence = []
@@ -324,7 +324,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
-    t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
+    t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word2idx, word_list, freq, args))
     t.start()
 
     # get from data_queue and feed to model
