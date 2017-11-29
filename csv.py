@@ -2,13 +2,10 @@
 
 import argparse
 from collections import Counter
-import copy
-import pdb
+#import pdb
 import re
 import sys
-import threading
 import time
-import queue
 
 import numpy as np
 import torch
@@ -120,7 +117,7 @@ class CSV(nn.Module):
         sense_indices = np.array(sense_indices)
 
         sense_embs = self.sense_embs(Variable(torch.LongTensor(sense_indices).cuda()))
-        
+
         return sense2idx, sense_embs.cpu().data.numpy()
 
     def add_sense_embs(self, created_sense_embs):
@@ -140,7 +137,7 @@ class CSV(nn.Module):
             self.sense_embs = new_embs
             #self.sense_embs = self.sense_embs.cuda()
             self.sense_capacity = new_capacity
-            
+
             return True
         return False
 
@@ -184,7 +181,7 @@ def save_model(filename, model, args, word2idx):
         'params': model.state_dict()
     }, filename)
     #}, 'test.pth.tar')
-        
+
 def load_model(filename):
     checkpoint = torch.load(filename)
     word2idx = checkpoint['word2idx']
@@ -270,13 +267,13 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                     chunk_pos = 0
                     while chunk_pos < chunk.shape[0]:
                         remain_space = args.batch_size - batch_count
-                        remain_chunk = chunk.shape[0] - chunk_pos 
+                        remain_chunk = chunk.shape[0] - chunk_pos
 
-                        if remain_chunk < remain_space: 
+                        if remain_chunk < remain_space:
                             take_from_chunk = remain_chunk
                         else:
                             take_from_chunk = remain_space
-                            
+
                         batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
                         batch_count += take_from_chunk
 
@@ -347,15 +344,16 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                     data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
                 else:
                     data = Variable(torch.LongTensor(chunk), requires_grad=False)
-                context_feats = model.get_context_feats(data[:, :2*args.window])             
+                context_feats = model.get_context_feats(data[:, :2*args.window])
                 context_feats = context_feats.cpu().data.numpy()
                 sense2idx, sense_embs = model.get_possible_sense_embs(chunk[:, 2*args.window+1].tolist())
                 zero = np.zeros((chunk.shape[0], args.size),'float32')
-                            
-                chunk, created_sense_embs = data_producer.create_n_select_sense(chunk, context_feats, sense2idx, 
-                                                np.concatenate((sense_embs,zero),0), model.word2sense, chunk.shape[0], 
+
+                chunk, created_sense_embs = data_producer.create_n_select_sense(chunk, context_feats, sense2idx,
+                                                np.concatenate((sense_embs,zero),0), model.word2sense, chunk.shape[0],
                                                 sense_embs.shape[0], args.size, args.window, args.delta, model.n_senses)
                 if model.add_sense_embs(created_sense_embs):
+                    print("\nexapnded sense_embs: %d" % model.n_senses)
                     if args.cuda:
                         model.cuda()
                     optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
@@ -366,24 +364,25 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                         data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
                     else:
                         data = Variable(torch.LongTensor(chunk), requires_grad=False)
-                         
-                    optimizer.zero_grad()   
+
+                    optimizer.zero_grad()
                     loss = model(data, False)
                     loss.backward()
                     optimizer.step()
+                #print(sum([len(s) for s in model.word2sense]))
 
             elif args.stage == 3:
                 if args.cuda:
                     data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
                 else:
                     data = Variable(torch.LongTensor(chunk), requires_grad=False)
-                        
+
                 type_ids = chunk[:, 2*args.window+1:2*args.window+2+2*args.negative]
                 type_ids = np.reshape(type_ids, (type_ids.shape[0] * type_ids.shape[1]))
                 sense2idx, sense_embs = model.get_possible_sense_embs(type_ids.tolist())
 
                 # get type_idx from chunk, and do sense selection here.
-                context_feats = model.get_context_feats(data[:, :2*args.window])             
+                context_feats = model.get_context_feats(data[:, :2*args.window])
                 context_feats = context_feats.cpu().data.numpy()
 
                 chunk = data_producer.select_sense(chunk, context_feats, sense2idx, sense_embs,
@@ -393,13 +392,15 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                     data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
                 else:
                     data = Variable(torch.LongTensor(chunk), requires_grad=False)
-                         
-                optimizer.zero_grad()   
+
+                optimizer.zero_grad()
                 loss = model(data)
                 loss.backward()
                 optimizer.step()
                 model.global_embs.weight.data[args.vocab_size].fill_(0)
     t.join()
+    print()
+    print(sum([len(s) for s in model.word2sense]))
 
 if __name__ == '__main__':
     set_start_method('forkserver')
@@ -410,13 +411,14 @@ if __name__ == '__main__':
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
 
-    word_count_actual = mp.Value('i', 0)
+    word_count_actual = mp.Value('i', 1)
 
     word2idx, word_list, freq = build_vocab(args)
     model = init_net(args)
     model.share_memory()
     if args.cuda:
         model.cuda()
+
 
     # stage 1, learn robust context representation.
     vars(args)['stage'] = 1
@@ -431,6 +433,8 @@ if __name__ == '__main__':
     for p in processes:
         p.join()
     del processes
+    print()
+    print(sum([len(s) for s in model.word2sense]))
 
     if args.multi_proto:
         # stage 2, create new sense in a non-parametric way.
@@ -441,9 +445,13 @@ if __name__ == '__main__':
         print("\nStage 2")
         word_count_actual.value = 0
         vars(args)['t_start'] = time.monotonic()
-        p = mp.Process(target=train_process, args=(0, word_count_actual, word2idx, word_list, freq, args, model))
-        p.start()
-        p.join()
+        train_process(0, word_count_actual, word2idx, word_list, freq, args, model)
+        #p = mp.Process(target=train_process, args=(0, word_count_actual, word2idx, word_list, freq, args, model))
+        #p.start()
+        #p.join()
+
+        print()
+        print(sum([len(s) for s in model.word2sense]))
 
         # stage 3, no more sense creation.
         model.global_embs.requires_grad = True
@@ -460,6 +468,8 @@ if __name__ == '__main__':
 
         for p in processes:
             p.join()
+        print()
+        print(sum([len(s) for s in model.word2sense]))
 
     # save model
     filename = args.save

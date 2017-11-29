@@ -3,3 +3,4 @@
 *.so
 *.txt
 build/*
+*.pth.tar
