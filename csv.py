@@ -85,7 +85,7 @@ class CSV(nn.Module):
     def __init__(self, args):
         super(CSV, self).__init__()
         self.global_embs = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
-        self.sense_embs = nn.Embedding(args.vocab_size*3, args.size, sparse=True)
+        self.sense_embs = nn.Embedding(args.vocab_size*2, args.size, sparse=True)
         self.word2sense = [ [i] for i in range(args.vocab_size) ]
         self.ctx_weight = torch.nn.Parameter(torch.zeros(2*args.window, args.size))
 
@@ -94,7 +94,7 @@ class CSV(nn.Module):
         self.ctx_weight.data.normal_(0,1)
 
         self.n_senses = args.vocab_size
-        self.sense_capacity = args.vocab_size*3
+        self.sense_capacity = args.vocab_size*2
         self.batch_size = args.batch_size
         self.size = args.size
         self.window = args.window
@@ -302,7 +302,8 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
     data_queue = mp.SimpleQueue()
 
     #optimizer = optim.SGD(model.parameters(), lr=args.lr)
-    optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    lr = args.lr
+    optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
@@ -317,11 +318,12 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
         else:
             # lr anneal & output
             if word_count_actual.value - prev_word_cnt > 10000:
-                lr = args.lr * (1 - word_count_actual.value / (n_iter * args.train_words))
-                if lr < 0.0001 * args.lr:
-                    lr = 0.0001 * args.lr
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = lr
+                if args.lr_anneal:
+                    lr = args.lr * (1 - word_count_actual.value / (n_iter * args.train_words))
+                    if lr < 0.0001 * args.lr:
+                        lr = 0.0001 * args.lr
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = lr
 
                 sys.stdout.write("\rAlpha: %0.8f, Progess: %0.2f, Words/sec: %f" % (lr, word_count_actual.value / (n_iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
                 sys.stdout.flush()
@@ -369,7 +371,6 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                     loss = model(data, False)
                     loss.backward()
                     optimizer.step()
-                #print(sum([len(s) for s in model.word2sense]))
 
             elif args.stage == 3:
                 if args.cuda:
@@ -399,8 +400,6 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 optimizer.step()
                 model.global_embs.weight.data[args.vocab_size].fill_(0)
     t.join()
-    print()
-    print(sum([len(s) for s in model.word2sense]))
 
 if __name__ == '__main__':
     set_start_method('forkserver')
@@ -423,6 +422,7 @@ if __name__ == '__main__':
     # stage 1, learn robust context representation.
     vars(args)['stage'] = 1
     print("Stage 1")
+    vars(args)['lr_anneal'] = True
     vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
@@ -433,8 +433,7 @@ if __name__ == '__main__':
     for p in processes:
         p.join()
     del processes
-    print()
-    print(sum([len(s) for s in model.word2sense]))
+    print("\nStage 1, ", time.monotonic() - args.t_start, " secs")
 
     if args.multi_proto:
         # stage 2, create new sense in a non-parametric way.
@@ -443,6 +442,8 @@ if __name__ == '__main__':
         model.ctx_weight.requires_grad = False
         vars(args)['stage'] = 2
         print("\nStage 2")
+        vars(args)['lr'] = 0.00005
+        vars(args)['lr_anneal'] = False
         word_count_actual.value = 0
         vars(args)['t_start'] = time.monotonic()
         train_process(0, word_count_actual, word2idx, word_list, freq, args, model)
@@ -450,8 +451,13 @@ if __name__ == '__main__':
         #p.start()
         #p.join()
 
-        print()
-        print(sum([len(s) for s in model.word2sense]))
+        # resize sense_embs
+        new_embs = nn.Embedding(model.n_senses, args.size, sparse=True)
+        new_embs.weight.data[:model.n_senses, :] = model.sense_embs.weight.data[:model.n_senses, :]
+        model.sense_embs = new_embs
+        if args.cuda:
+            model.cuda()
+        print("\nStage 2, ", time.monotonic() - args.t_start, " secs")
 
         # stage 3, no more sense creation.
         model.global_embs.requires_grad = True
@@ -468,8 +474,8 @@ if __name__ == '__main__':
 
         for p in processes:
             p.join()
-        print()
-        print(sum([len(s) for s in model.word2sense]))
+
+        print("\nStage 3, ", time.monotonic() - args.t_start, " secs")
 
     # save model
     filename = args.save
