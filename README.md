@@ -57,9 +57,9 @@ pytorch 0.2.0_3
   1. generating both CBOW and skipgram training data from a sentence, 
   2. printing the trained embeddings to file.
   3. allocating word frequency table (`unigram_table`) for negative sampling. 
-- `main.py`: the word2vec implementation with optimized speed. Multiple processes are created to parrallelize the training load, and each subprocess (`train_process`) creates threads (`train_sent_producer`) that process the texts and generate training data. Training data is stored in a queue (this is a producer-consumer model). Supports GPU accelertion (CUDA).
+- `main.py`: the word2vec implementation with optimized speed. Multiple processes are created to parrallelize the training load, and each subprocess (`train_process`) processes the texts and generates training data with functions defined in `data_producer.pyx`. Training data is stored in a queue `data_queue` (this is a producer-consumer model). GPU accelertion (CUDA) supported.
 - `main_simple.py`: the word2vec implementation without multiprocessing. Easier for debugging.
-- `csv.py`: CSV model in [Learning Context Specific Word/Character Vectors, AAAI 2017](https://aaai.org/ocs/index.php/AAAI/AAAI17/paper/view/14601). Currently debugging. 
+- `csv.py`: Re-implemented CSV model in [Learning Context Specific Word/Character Vectors, AAAI 2017](https://aaai.org/ocs/index.php/AAAI/AAAI17/paper/view/14601). Currently debugging. 
 
 ### TODO:
 Re-implement the following models:
