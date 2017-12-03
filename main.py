@@ -222,7 +222,11 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
             break
 
     batch_count = 0
-    batch_placeholder = np.zeros((args.batch_size, 2*args.window+2+2*args.negative), 'int64')
+    if args.cbow == 1:
+        batch_placeholder = np.zeros((args.batch_size, 2*args.window+2+2*args.negative), 'int64')
+    else:
+        batch_placeholder = np.zeros((args.batch_size, 2+2*args.negative), 'int64')
+
     for it in range(args.iter):
         train_file.seek(file_pos, 0)
 
@@ -260,6 +264,7 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
                                 sent_id.append( word2idx[word] )
                             i += 1
                     if len(sent_id) < 2:
+                        word_cnt += len(sentence)
                         continue
 
                     next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
@@ -316,7 +321,8 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
         with word_count_actual.get_lock():
             word_count_actual.value += word_cnt - last_word_cnt
 
-    data_queue.put(batch_placeholder[:batch_count,:])
+    if batch_count > 0:
+        data_queue.put(batch_placeholder[:batch_count,:])
     data_queue.put(None)
 
 def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):

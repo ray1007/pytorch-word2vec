@@ -17,8 +17,8 @@ pytorch 0.2.0_3
 
 ### Usage:
 - First run cython: `python3 setup.py build_ext --inplace`
-- Train embedding with: `[CUDA_VISIBLE_DEVICES=<device_id>] ./main.py --cuda --train <your_corpus.txt> --output <your_output.txt> --cbow 0 --size 300 --window 5 --sample 1e-4 --neagative 5 --min_count 5 --processes 4 --iter 1 --batch_size 100`
-- Train without multiprocessing: `[CUDA_VISIBLE_DEVICES=<device_id>] ./main_simple.py --cuda --train <your_corpus.txt> --output <your_output.txt> --cbow 0 --size 300 --window 5 --sample 1e-4 --neagative 5 --iter 1 --batch_size 100`
+- Train embedding with: `[CUDA_VISIBLE_DEVICES=<device_id>] ./main.py --cuda --train <your_corpus.txt> --output <your_output.txt> --cbow 0 --size 300 --window 5 --sample 1e-4 --negative 5 --min_count 5 --processes 4 --iter 1 --batch_size 100`
+- Train without multiprocessing: `[CUDA_VISIBLE_DEVICES=<device_id>] ./main_simple.py --cuda --train <your_corpus.txt> --output <your_output.txt> --cbow 0 --size 300 --window 5 --sample 1e-4 --negative 5 --iter 1 --batch_size 100`
 
 ### Benchmarking:
 #### Training speed (Word/sec):
