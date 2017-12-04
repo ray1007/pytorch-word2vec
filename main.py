@@ -39,6 +39,7 @@ parser.add_argument("--batch_size", type=int, default=100, help="(max) batch siz
 parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
 parser.add_argument("--output_ctx", action='store_true', default=False, help="output context embeddings")
 
+MAX_SENT_LEN = 1000
 
 # Build the vocabulary.
 def file_split(f, delim=' \t\n', bufsize=1024):
@@ -209,7 +210,7 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
         table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
 
     train_file = open(args.train)
-    file_pos = args.file_size / args.processes * p_id
+    file_pos = args.file_size * p_id // args.processes
     train_file.seek(file_pos, 0)
     while True:
         try:
@@ -236,15 +237,17 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
         prev = ''
         eof = False
         while True:
-            if eof or word_cnt > args.train_words / args.processes:
+            #if eof or word_cnt > args.train_words / args.processes:
+            if eof or train_file.tell() > file_pos + args.file_size / args.processes:
                 break
 
             while True:
                 s = train_file.read(1)
                 if not s:
                     eof = True
+                    #print(train_file.tell(), args.file_size)
                     break
-                elif s == ' ':
+                elif s == ' ' or s == '\t':
                     if prev in word2idx:
                         sentence.append(prev)
                     prev = ''
@@ -277,34 +280,34 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
                     word_cnt += len(sentence)
                     sentence.clear()
                     continue
-                
+
                 next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
                 if args.cbow == 1: # train CBOW
-                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, 
+                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val,
                                 args.window, args.negative, args.vocab_size, args.batch_size, next_random)
                 elif args.cbow == 0: # train skipgram
-                    chunk = data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, 
+                    chunk = data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val,
                                 args.window, args.negative, args.vocab_size, args.batch_size, next_random)
-                
+
                 chunk_pos = 0
                 while chunk_pos < chunk.shape[0]:
                     remain_space = args.batch_size - batch_count
-                    remain_chunk = chunk.shape[0] - chunk_pos 
+                    remain_chunk = chunk.shape[0] - chunk_pos
 
-                    if remain_chunk < remain_space: 
+                    if remain_chunk < remain_space:
                         take_from_chunk = remain_chunk
                     else:
                         take_from_chunk = remain_space
-                           
+
                     batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
                     batch_count += take_from_chunk
-                            
+
                     if batch_count == args.batch_size:
                         data_queue.put(batch_placeholder)
                         batch_count = 0
 
                     chunk_pos += take_from_chunk
-     
+
                 word_cnt += len(sentence)
                 if word_cnt - last_word_cnt > 10000:
                     with word_count_actual.get_lock():
@@ -314,13 +317,16 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
 
         with word_count_actual.get_lock():
             word_count_actual.value += word_cnt - last_word_cnt
+        #print("p_id: %d, word_cnt:%d" % (p_id, word_cnt))
 
     if batch_count > 0:
         data_queue.put(batch_placeholder[:batch_count,:])
     data_queue.put(None)
+    #print(p_id, file_pos, train_file.tell(), args.file_size)
 
 def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
+    #data_queue = mp.Queue(100000)
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
@@ -394,6 +400,7 @@ if __name__ == '__main__':
 
     for p in processes:
         p.join()
+    print("\nStage 1, ", time.monotonic() - args.t_start, " secs, ", word_count_actual.value)
 
     # output vectors
     if args.cuda:
