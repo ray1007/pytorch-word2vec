@@ -234,90 +234,84 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
         word_cnt = 0
         sentence = []
         prev = ''
+        eof = False
         while True:
-            if word_cnt > args.train_words / args.processes:
+            if eof or word_cnt > args.train_words / args.processes:
                 break
 
-            s = train_file.read(1)
-            if not s:
-                break
-            elif s == ' ':
-                if prev in word2idx:
-                    sentence.append(prev)
-                prev = ''
-            elif s == '\n':
-                if prev in word2idx:
-                    sentence.append(prev)
-                prev = ''
-                if len(sentence) > 0:
-                    # subsampling
-                    sent_id = []
-                    if args.sample != 0:
-                        sent_len = len(sentence)
-                        i = 0
-                        while i < sent_len:
-                            word = sentence[i]
-                            f = freq[word] / args.train_words
-                            pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
+            while True:
+                s = train_file.read(1)
+                if not s:
+                    eof = True
+                    break
+                elif s == ' ':
+                    if prev in word2idx:
+                        sentence.append(prev)
+                    prev = ''
+                    if len(sentence) >= MAX_SENT_LEN:
+                        break
+                elif s == '\n':
+                    if prev in word2idx:
+                        sentence.append(prev)
+                    prev = ''
+                    break
+                else:
+                    prev += s
 
-                            if pb > np.random.random_sample():
-                                sent_id.append( word2idx[word] )
-                            i += 1
-                    if len(sent_id) < 2:
-                        word_cnt += len(sentence)
-                        continue
+            if len(sentence) > 0:
+                # subsampling
+                sent_id = []
+                if args.sample != 0:
+                    sent_len = len(sentence)
+                    i = 0
+                    while i < sent_len:
+                        word = sentence[i]
+                        f = freq[word] / args.train_words
+                        pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
 
-                    next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
-                    if args.cbow == 1: # train CBOW
-                        chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random)
-                        chunk_pos = 0
-                        while chunk_pos < chunk.shape[0]:
-                            remain_space = args.batch_size - batch_count
-                            remain_chunk = chunk.shape[0] - chunk_pos 
+                        if pb > np.random.random_sample():
+                            sent_id.append( word2idx[word] )
+                        i += 1
 
-                            if remain_chunk < remain_space: 
-                                take_from_chunk = remain_chunk
-                            else:
-                                take_from_chunk = remain_space
+                if len(sent_id) < 2:
+                    word_cnt += len(sentence)
+                    sentence.clear()
+                    continue
+                
+                next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
+                if args.cbow == 1: # train CBOW
+                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, 
+                                args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                elif args.cbow == 0: # train skipgram
+                    chunk = data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, 
+                                args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                
+                chunk_pos = 0
+                while chunk_pos < chunk.shape[0]:
+                    remain_space = args.batch_size - batch_count
+                    remain_chunk = chunk.shape[0] - chunk_pos 
+
+                    if remain_chunk < remain_space: 
+                        take_from_chunk = remain_chunk
+                    else:
+                        take_from_chunk = remain_space
+                           
+                    batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                    batch_count += take_from_chunk
                             
-                            batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
-                            batch_count += take_from_chunk
+                    if batch_count == args.batch_size:
+                        data_queue.put(batch_placeholder)
+                        batch_count = 0
 
-                            if batch_count == args.batch_size:
-                                data_queue.put(batch_placeholder)
-                                batch_count = 0
-
-                            chunk_pos += take_from_chunk
-                    elif args.cbow == 0: # train skipgram
-                        chunk = data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val, args.window, args.negative, args.vocab_size, args.batch_size, next_random)
-                        chunk_pos = 0
-                        while chunk_pos < chunk.shape[0]:
-                            remain_space = args.batch_size - batch_count
-                            remain_chunk = chunk.shape[0] - chunk_pos 
-
-                            if remain_chunk < remain_space: 
-                                take_from_chunk = remain_chunk
-                            else:
-                                take_from_chunk = remain_space
-                            
-                            batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
-                            batch_count += take_from_chunk
-
-                            if batch_count == args.batch_size:
-                                data_queue.put(batch_placeholder)
-                                batch_count = 0
-
-                            chunk_pos += take_from_chunk
+                    chunk_pos += take_from_chunk
      
                 word_cnt += len(sentence)
                 if word_cnt - last_word_cnt > 10000:
                     with word_count_actual.get_lock():
                         word_count_actual.value += word_cnt - last_word_cnt
                     last_word_cnt = word_cnt
-
                 sentence.clear()
-            else:
-                prev += s
+
         with word_count_actual.get_lock():
             word_count_actual.value += word_cnt - last_word_cnt
 
