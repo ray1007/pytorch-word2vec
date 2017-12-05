@@ -23,7 +23,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--train", type=str, default="", help="training file")
 parser.add_argument("--save", type=str, default="csv.pth.tar", help="saved model filename")
 parser.add_argument("--size", type=int, default=300, help="word embedding dimension")
-#parser.add_argument("--cbow", type=int, default=1, help="1 for cbow, 0 for skipgram")
 parser.add_argument("--window", type=int, default=5, help="context window size")
 parser.add_argument("--sample", type=float, default=1e-4, help="subsample threshold")
 parser.add_argument("--negative", type=int, default=10, help="number of negative samples")
@@ -36,8 +35,8 @@ parser.add_argument("--lr", type=float, default=-1.0, help="initial learning rat
 parser.add_argument("--batch_size", type=int, default=100, help="(max) batch size")
 parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
 parser.add_argument("--multi_proto", action='store_true', default=False, help="True: multi-prototype, False:single-prototype")
-parser.add_argument("--output_ctx", action='store_true', default=False, help="output context embeddings")
 
+MAX_SENT_LEN = 1000
 
 # Build the vocabulary.
 def file_split(f, delim=' \t\n', bufsize=1024):
@@ -90,7 +89,8 @@ class CSV(nn.Module):
         self.ctx_weight = torch.nn.Parameter(torch.zeros(2*args.window, args.size))
 
         self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
-        self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
+        #self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
+        self.sense_embs.weight.data.zero_()
         self.ctx_weight.data.normal_(0,1)
 
         self.n_senses = args.vocab_size
@@ -106,7 +106,7 @@ class CSV(nn.Module):
         ctx_feats = torch.sum(ctx_type_embs * self.ctx_weight, 1)
         return ctx_feats
 
-    def get_possible_sense_embs(self, type_indices):
+    def get_possible_sense_embs(self, type_indices, cuda=True):
         sense_indices = []
         sense2idx = {}
         for type_id in type_indices:
@@ -116,7 +116,10 @@ class CSV(nn.Module):
                     sense_indices.append( s_id )
         sense_indices = np.array(sense_indices)
 
-        sense_embs = self.sense_embs(Variable(torch.LongTensor(sense_indices).cuda()))
+        if cuda:
+            sense_embs = self.sense_embs(Variable(torch.LongTensor(sense_indices).cuda()))
+        else:
+            sense_embs = self.sense_embs(Variable(torch.LongTensor(sense_indices)))
 
         return sense2idx, sense_embs.cpu().data.numpy()
 
@@ -208,7 +211,7 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
         table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
 
     train_file = open(args.train)
-    file_pos = args.file_size / n_proc * p_id
+    file_pos = args.file_size * p_id // n_proc
     train_file.seek(file_pos, 0)
     while True:
         try:
@@ -230,76 +233,93 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
         word_cnt = 0
         sentence = []
         prev = ''
+        eof = False
         while True:
-            if word_cnt > args.train_words / n_proc:
+            #if word_cnt > args.train_words / n_proc:
+            if eof or train_file.tell() > file_pos + args.file_size / args.processes:
                 break
 
-            s = train_file.read(1)
-            if not s:
-                break
-            elif s == ' ':
-                if prev in word2idx:
-                    sentence.append(prev)
-                prev = ''
-            elif s == '\n':
-                if prev in word2idx:
-                    sentence.append(prev)
-                prev = ''
-                if len(sentence) > 0:
-                    # subsampling
-                    sent_id = []
-                    if args.sample != 0:
-                        sent_len = len(sentence)
-                        i = 0
-                        while i < sent_len:
-                            word = sentence[i]
-                            f = freq[word] / args.train_words
-                            pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
+            while True:
+                s = train_file.read(1)
+                if not s:
+                    eof = True
+                    break
+                #elif s == ' ':
+                elif s == ' ' or s == '\t':
+                    if prev in word2idx:
+                        sentence.append(prev)
+                    prev = ''
+                    if len(sentence) >= MAX_SENT_LEN:
+                        break
+                elif s == '\n':
+                    if prev in word2idx:
+                        sentence.append(prev)
+                    prev = ''
+                    break
+                else:
+                    prev += s
+                
+            if len(sentence) > 0:
+                # subsampling
+                sent_id = []
+                if args.sample != 0:
+                    sent_len = len(sentence)
+                    i = 0
+                    while i < sent_len:
+                        word = sentence[i]
+                        f = freq[word] / args.train_words
+                        pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
 
-                            if pb > np.random.random_sample():
-                                sent_id.append( word2idx[word] )
-                            i += 1
-                    if len(sent_id) < 2:
-                        continue
+                        if pb > np.random.random_sample():
+                            sent_id.append( word2idx[word] )
+                        i += 1
 
-                    next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
-                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, neg, args.vocab_size, args.batch_size, next_random)
-                    chunk_pos = 0
-                    while chunk_pos < chunk.shape[0]:
-                        remain_space = args.batch_size - batch_count
-                        remain_chunk = chunk.shape[0] - chunk_pos
+                if len(sent_id) < 2:
+                    word_cnt += len(sentence)
+                    sentence.clear()
+                    continue
 
-                        if remain_chunk < remain_space:
-                            take_from_chunk = remain_chunk
-                        else:
-                            take_from_chunk = remain_space
+                next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
+                chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, 
+                            neg, args.vocab_size, args.batch_size, next_random)
+    
+                chunk_pos = 0
+                while chunk_pos < chunk.shape[0]:
+                    remain_space = args.batch_size - batch_count
+                    remain_chunk = chunk.shape[0] - chunk_pos
 
-                        batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
-                        batch_count += take_from_chunk
+                    if remain_chunk < remain_space:
+                        take_from_chunk = remain_chunk
+                    else:
+                        take_from_chunk = remain_space
 
-                        if batch_count == args.batch_size:
-                            data_queue.put(batch_placeholder)
-                            batch_count = 0
+                    batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                    batch_count += take_from_chunk
 
-                        chunk_pos += take_from_chunk
+                    if batch_count == args.batch_size:
+                        data_queue.put(batch_placeholder)
+                        batch_count = 0
+
+                    chunk_pos += take_from_chunk
 
                 word_cnt += len(sentence)
                 if word_cnt - last_word_cnt > 10000:
                     with word_count_actual.get_lock():
                         word_count_actual.value += word_cnt - last_word_cnt
                     last_word_cnt = word_cnt
-
                 sentence.clear()
-            else:
-                prev += s
+
         with word_count_actual.get_lock():
             word_count_actual.value += word_cnt - last_word_cnt
+        print(p_id, it, file_pos, train_file.tell(), args.file_size)
     if batch_count > 0:
         data_queue.put(batch_placeholder[:batch_count,:])
     data_queue.put(None)
+    print(p_id, file_pos, train_file.tell(), args.file_size)
 
 def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
+    #data_queue = mp.Queue(100000)
 
     #optimizer = optim.SGD(model.parameters(), lr=args.lr)
     lr = args.lr
@@ -325,7 +345,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = lr
 
-                sys.stdout.write("\rAlpha: %0.8f, Progess: %0.2f, Words/sec: %f" % (lr, word_count_actual.value / (n_iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
+                sys.stdout.write("\rAlpha: %0.8f, Progess: %0.2f, Words/sec: %f, word_cnt: %d" % (lr, word_count_actual.value / (n_iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start), word_count_actual.value))
                 sys.stdout.flush()
                 prev_word_cnt = word_count_actual.value
 
@@ -410,7 +430,7 @@ if __name__ == '__main__':
     train_file.seek(0, 2)
     vars(args)['file_size'] = train_file.tell()
 
-    word_count_actual = mp.Value('i', 1)
+    word_count_actual = mp.Value('L', 0)
 
     word2idx, word_list, freq = build_vocab(args)
     model = init_net(args)
@@ -433,7 +453,7 @@ if __name__ == '__main__':
     for p in processes:
         p.join()
     del processes
-    print("\nStage 1, ", time.monotonic() - args.t_start, " secs")
+    print("\nStage 1, ", time.monotonic() - args.t_start, " secs ", word_count_actual.value)
 
     if args.multi_proto:
         # stage 2, create new sense in a non-parametric way.
