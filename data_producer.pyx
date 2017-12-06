@@ -193,17 +193,17 @@ def sg_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int neg
 def write_embs(str fn, word_list, float[:,:] embs, int vocab_size, int dim):
     cdef int i,j
     with open(fn, 'w') as out_f:
-        out_f.write('%d\t%d\n' % (vocab_size+1, dim));
+        out_f.write('%d %d\n' % (vocab_size+1, dim));
 
-        out_f.write('</s>\t')
+        out_f.write('</s> ')
         for j in range(dim):
-            out_f.write( '%.6f\t' % embs[vocab_size, j] )
+            out_f.write( '%.6f ' % embs[vocab_size, j] )
         out_f.write('\n')
 
         for i in range(vocab_size):
-            out_f.write('%s\t' % word_list[i])
+            out_f.write('%s ' % word_list[i])
             for j in range(dim):
-                out_f.write( '%.6f\t' % embs[i, j] )
+                out_f.write( '%.6f ' % embs[i, j] )
             out_f.write('\n')
         
 
