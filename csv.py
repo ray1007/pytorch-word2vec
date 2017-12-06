@@ -236,7 +236,7 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
         eof = False
         while True:
             #if word_cnt > args.train_words / n_proc:
-            if eof or train_file.tell() > file_pos + args.file_size / args.processes:
+            if eof or train_file.tell() > file_pos + args.file_size / n_proc:
                 break
 
             while True:
@@ -258,7 +258,7 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                     break
                 else:
                     prev += s
-                
+
             if len(sentence) > 0:
                 # subsampling
                 sent_id = []
@@ -280,9 +280,9 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                     continue
 
                 next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
-                chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window, 
+                chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window,
                             neg, args.vocab_size, args.batch_size, next_random)
-    
+
                 chunk_pos = 0
                 while chunk_pos < chunk.shape[0]:
                     remain_space = args.batch_size - batch_count
@@ -462,7 +462,7 @@ if __name__ == '__main__':
         model.ctx_weight.requires_grad = False
         vars(args)['stage'] = 2
         print("\nStage 2")
-        vars(args)['lr'] = 0.00005
+        vars(args)['lr'] = args.lr * 0.001
         vars(args)['lr_anneal'] = False
         word_count_actual.value = 0
         vars(args)['t_start'] = time.monotonic()
