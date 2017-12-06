@@ -2,13 +2,11 @@
 
 import argparse
 from collections import Counter
-import copy
+from multiprocessing import set_start_method
 import pdb
 import re
 import sys
-import threading
 import time
-import queue
 
 import numpy as np
 import torch
@@ -20,7 +18,6 @@ import torch.multiprocessing as mp
 
 import data_producer
 
-from multiprocessing import set_start_method
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--train", type=str, default="", help="training file")
@@ -60,7 +57,6 @@ def file_split(f, delim=' \t\n', bufsize=1024):
         yield prev
 
 def build_vocab(args):
-    #train_file = open(args.train, 'r')
     vocab = Counter()
     word_count = 0
     for word in file_split(open(args.train)):
@@ -94,18 +90,6 @@ class CBOWMean(torch.autograd.Function):
         x, = ctx.saved_variables
         return g.expand_as(x), None
 
-class MySigmoid(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input):
-        cond1 = (input > 6.0).float()
-        cond2 = (input > -6.0).float()
-        ret = cond1 + (1-cond1) * input.sigmoid()
-        ret = cond2 * ret
-        return ret
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output
-
 class CBOW(nn.Module):
     def __init__(self, args):
         super(CBOW, self).__init__()
@@ -119,8 +103,6 @@ class CBOW(nn.Module):
         self.pad_idx = args.vocab_size
 
     def forward(self, data):
-        #self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
-
         ctx_indices = data[:, 0:2*self.window]
         ctx_lens = data[:, 2*self.window].float()
         word_idx = data[:, 2*self.window+1]
@@ -135,15 +117,6 @@ class CBOW(nn.Module):
 
         pos_ips = torch.sum(c_embs[:,0,:] * w_embs, 1)
         neg_ips = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
-        '''
-        pos_logits = MySigmoid.apply(pos_ips)
-        neg_logits = MySigmoid.apply(neg_ips)
-        neg_logits = neg_logits * neg_mask
-        pos_loss = torch.sum( 0.5 * torch.pow(1-pos_logits, 2) )
-        neg_loss = torch.sum( 0.5 * torch.pow(0-neg_logits, 2) )
-
-        '''
-        neg_ips = neg_ips * neg_mask
 
         # Neg Log Likelihood
         pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)) )
@@ -157,15 +130,13 @@ class SG(nn.Module):
         self.emb0_lookup = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
         self.emb1_lookup = nn.Embedding(args.vocab_size, args.size, sparse=True)
         self.emb0_lookup.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
-        #self.emb0_lookup.weight.data[args.vocab_size].fill_(0)
         self.emb1_lookup.weight.data.zero_()
+
         self.window = args.window
         self.negative = args.negative
         self.pad_idx = args.vocab_size
 
     def forward(self, data):
-        #self.emb0_lookup.weight.data[self.pad_idx].fill_(0)
-
         word_idx = data[:, 0]
         ctx_idx = data[:, 1]
         neg_indices = data[:, 2:2+self.negative]
@@ -177,15 +148,6 @@ class SG(nn.Module):
 
         pos_ips = torch.sum(w_embs * c_embs, 1)
         neg_ips = torch.bmm(n_embs, torch.unsqueeze(w_embs,1).permute(0,2,1))[:,:,0]
-        '''
-        pos_logits = MySigmoid.apply(pos_ips)
-        neg_logits = MySigmoid.apply(neg_ips)
-        neg_logits = neg_logits * neg_mask
-        pos_loss = torch.sum( 0.5 * torch.pow(1-pos_logits, 2) )
-        neg_loss = torch.sum( 0.5 * torch.pow(0-neg_logits, 2) )
-
-        neg_ips = neg_ips * neg_mask
-        '''
 
         # Neg Log Likelihood
         pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)) )
@@ -237,7 +199,6 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
         prev = ''
         eof = False
         while True:
-            #if eof or word_cnt > args.train_words / args.processes:
             if eof or train_file.tell() > file_pos + args.file_size / args.processes:
                 break
 
@@ -245,7 +206,6 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
                 s = train_file.read(1)
                 if not s:
                     eof = True
-                    #print(train_file.tell(), args.file_size)
                     break
                 elif s == ' ' or s == '\t':
                     if prev in word2idx:
@@ -317,16 +277,13 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
 
         with word_count_actual.get_lock():
             word_count_actual.value += word_cnt - last_word_cnt
-        #print("p_id: %d, word_cnt:%d" % (p_id, word_cnt))
 
     if batch_count > 0:
         data_queue.put(batch_placeholder[:batch_count,:])
     data_queue.put(None)
-    #print(p_id, file_pos, train_file.tell(), args.file_size)
 
 def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
-    #data_queue = mp.Queue(100000)
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
@@ -382,7 +339,7 @@ if __name__ == '__main__':
 
     word2idx, word_list, freq = build_vocab(args)
 
-    word_count_actual = mp.Value('i', 0)
+    word_count_actual = mp.Value('L', 0)
 
     model = init_net(args)
     model.share_memory()
@@ -393,14 +350,11 @@ if __name__ == '__main__':
     processes = []
     for p_id in range(args.processes):
         p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model))
-        #p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model, optimizer))
-        #p = threading.Thread(target=train_process, args=(p_id, word_count_actual, word2idx, freq, args, model, optimizer))
         p.start()
         processes.append(p)
 
     for p in processes:
         p.join()
-    print("\nStage 1, ", time.monotonic() - args.t_start, " secs, ", word_count_actual.value)
 
     # output vectors
     if args.cuda:
