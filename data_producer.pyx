@@ -224,7 +224,7 @@ def create_n_select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, 
         for s_id in word2sense[t_id]:
             sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
             if sim > max_sim:
-                sim = max_sim
+                max_sim = sim
                 max_sense_id = s_id
 
         if max_sense_id == -1:
@@ -257,7 +257,7 @@ def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:
             for s_id in word2sense[t_id]:
                 sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
                 if sim > max_sim:
-                    sim = max_sim
+                    max_sim = sim
                     max_sense_id = s_id
 
             chunk[b, pos] = max_sense_id
