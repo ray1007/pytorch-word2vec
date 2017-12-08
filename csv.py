@@ -478,6 +478,7 @@ if __name__ == '__main__':
         if args.cuda:
             model.cuda()
         print("\nStage 2, ", time.monotonic() - args.t_start, " secs")
+        print("Current # of senses: %d" % model.n_senses)
 
         # stage 3, no more sense creation.
         model.global_embs.requires_grad = True
