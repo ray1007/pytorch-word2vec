@@ -202,7 +202,7 @@ def load_model(filename):
     return model, word2idx
 
 # Training
-def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args):
+def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args, model):
     n_proc = 1 if args.stage == 2 else args.processes
     N = 1 if args.stage == 2 else args.iter
     neg = 0 if args.stage == 2 else args.negative
@@ -283,6 +283,24 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                 chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window,
                             neg, args.vocab_size, args.batch_size, next_random)
 
+                # select sense id here to speed up.
+                if args.stage == 3:
+                    if args.cuda:
+                        data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+                    else:
+                        data = Variable(torch.LongTensor(chunk), requires_grad=False)
+
+                    type_ids = chunk[:, 2*args.window+1:2*args.window+2+2*args.negative]
+                    type_ids = np.reshape(type_ids, (type_ids.shape[0] * type_ids.shape[1]))
+                    sense2idx, sense_embs = model.get_possible_sense_embs(type_ids.tolist())
+
+                    # get type_idx from chunk, and do sense selection here.
+                    context_feats = model.get_context_feats(data[:, :2*args.window])
+                    context_feats = context_feats.cpu().data.numpy()
+
+                    chunk = data_producer.select_sense(chunk, context_feats, sense2idx, sense_embs,
+                                model.word2sense, chunk.shape[0], args.size, args.window, args.negative)
+
                 chunk_pos = 0
                 while chunk_pos < chunk.shape[0]:
                     remain_space = args.batch_size - batch_count
@@ -325,7 +343,10 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
     lr = args.lr
     optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
 
-    t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
+    if args.stage == 3:
+        t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args, model))
+    else:
+        t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args, None))
     t.start()
 
     n_iter = 1 if args.stage == 2 else args.iter
@@ -349,7 +370,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 sys.stdout.flush()
                 prev_word_cnt = word_count_actual.value
 
-            if args.stage == 1:
+            if args.stage == 1 or args.stage == 3:
                 if args.cuda:
                     data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
                 else:
@@ -392,6 +413,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                     loss.backward()
                     optimizer.step()
 
+            '''
             elif args.stage == 3:
                 if args.cuda:
                     data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
@@ -408,7 +430,6 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 
                 chunk = data_producer.select_sense(chunk, context_feats, sense2idx, sense_embs,
                             model.word2sense, chunk.shape[0], args.size, args.window, args.negative)
-
                 if args.cuda:
                     data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
                 else:
@@ -419,6 +440,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 loss.backward()
                 optimizer.step()
                 model.global_embs.weight.data[args.vocab_size].fill_(0)
+            '''
     t.join()
 
 if __name__ == '__main__':
