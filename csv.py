@@ -260,6 +260,9 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                     prev += s
 
             if len(sentence) > 0:
+                sent_id = [ word2idx[word] for word in sentence ]
+
+                '''
                 # subsampling
                 sent_id = []
                 if args.sample != 0:
@@ -273,6 +276,7 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                         if pb > np.random.random_sample():
                             sent_id.append( word2idx[word] )
                         i += 1
+                '''
 
                 if len(sent_id) < 2:
                     word_cnt += len(sentence)
@@ -281,7 +285,7 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
 
                 next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
                 chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window,
-                            neg, args.vocab_size, args.batch_size, next_random)
+                            neg, args.vocab_size, args.batch_size, next_random, False)
 
                 chunk_pos = 0
                 while chunk_pos < chunk.shape[0]:
