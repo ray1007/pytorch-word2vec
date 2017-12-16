@@ -24,13 +24,13 @@ parser.add_argument("--train", type=str, default="", help="training file")
 parser.add_argument("--save", type=str, default="csv.pth.tar", help="saved model filename")
 parser.add_argument("--size", type=int, default=300, help="word embedding dimension")
 parser.add_argument("--window", type=int, default=5, help="context window size")
-parser.add_argument("--sample", type=float, default=1e-4, help="subsample threshold")
+parser.add_argument("--sample", type=float, default=1e-5, help="subsample threshold")
 parser.add_argument("--negative", type=int, default=10, help="number of negative samples")
 parser.add_argument("--delta", type=float, default=0.15, help="create new sense for a type if similarity lower than this value.")
 parser.add_argument("--min_count", type=int, default=5, help="minimum frequency of a word")
 parser.add_argument("--processes", type=int, default=4, help="number of processes")
 parser.add_argument("--num_workers", type=int, default=6, help="number of workers for data processsing")
-parser.add_argument("--iter", type=int, default=5, help="number of iterations")
+parser.add_argument("--iter", type=int, default=3, help="number of iterations")
 parser.add_argument("--lr", type=float, default=-1.0, help="initial learning rate")
 parser.add_argument("--batch_size", type=int, default=100, help="(max) batch size")
 parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
@@ -57,7 +57,6 @@ def file_split(f, delim=' \t\n', bufsize=1024):
         yield prev
 
 def build_vocab(args):
-    #train_file = open(args.train, 'r')
     vocab = Counter()
     word_count = 0
     for word in file_split(open(args.train)):
@@ -183,7 +182,6 @@ def save_model(filename, model, args, word2idx):
         'n_senses': model.n_senses,
         'params': model.state_dict()
     }, filename)
-    #}, 'test.pth.tar')
 
 def load_model(filename):
     checkpoint = torch.load(filename)
@@ -235,7 +233,6 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
         prev = ''
         eof = False
         while True:
-            #if word_cnt > args.train_words / n_proc:
             if eof or train_file.tell() > file_pos + args.file_size / n_proc:
                 break
 
@@ -259,9 +256,6 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                     prev += s
 
             if len(sentence) > 0:
-                sent_id = [ word2idx[word] for word in sentence ]
-
-                '''
                 # subsampling
                 sent_id = []
                 if args.sample != 0:
@@ -275,7 +269,6 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                         if pb > np.random.random_sample():
                             sent_id.append( word2idx[word] )
                         i += 1
-                '''
 
                 if len(sent_id) < 2:
                     word_cnt += len(sentence)
@@ -400,7 +393,7 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
 
-    n_iter = 1 
+    n_iter = 1
     # get from data_queue and feed to model
     prev_word_cnt = 0
     while True:
@@ -436,7 +429,7 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
                 idx = sense2idx[s_id]
                 new_sense_emb = torch.FloatTensor(sense_embs[idx, :])
                 model.sense_embs.weight.data[s_id, :] = new_sense_emb
-                
+
                 if s_id >= model.n_senses:
                     model.n_senses += 1
 
