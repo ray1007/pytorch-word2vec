@@ -46,8 +46,6 @@ def build_vocab(args):
 
     print("Vocab size: %ld" % len(word2idx))
     print("Words in train file: %ld" % word_count)
-    vars(args)['vocab_size'] = len(word2idx)
-    vars(args)['train_words'] = word_count
 
     # FAQ page: https://nlp.stanford.edu/software/parser-faq.shtml
     # POS tags: https://catalog.ldc.upenn.edu/docs/LDC99T42/tagguid1.pdf
