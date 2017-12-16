@@ -391,7 +391,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
 
-    counter_list = [ 1 for _ in range(model.sense_capacity) ]
+    counter_list = [ 1.0 for _ in range(model.sense_capacity) ]
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
@@ -438,11 +438,12 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
 
             if model.n_senses + args.batch_size > model.sense_capacity:
                 new_capacity = model.sense_capacity * 3 // 2
-                counter_list += [ 1 for _ in range(new_capacity - model.sense_capacity)]
+                counter_list += [ 1.0 for _ in range(new_capacity - model.sense_capacity)]
                 new_embs = nn.Embedding(new_capacity, args.size, sparse=True)
                 new_embs.weight.data[:model.n_senses, :] = model.sense_embs.weight.data[:model.n_senses, :]
                 model.sense_embs = new_embs
                 model.sense_capacity = new_capacity
+                print("\nexapnded sense_embs: %d" % model.n_senses)
     t.join()
 
 
@@ -482,10 +483,12 @@ if __name__ == '__main__':
     if args.multi_proto:
         # stage 2, create new sense in a non-parametric way.
         # Freeze model paramters except sense_embs, and use only 1 process to prevent race condition
+        old_batch_size = vars(args)['batch_size']
         model.global_embs.requires_grad = False
         model.ctx_weight.requires_grad = False
         model.sense_embs = model.sense_embs.cpu()
         vars(args)['stage'] = 2
+        vars(args)['batch_size'] = 5000
         print("\nStage 2")
         word_count_actual.value = 0
         vars(args)['t_start'] = time.monotonic()
@@ -502,6 +505,7 @@ if __name__ == '__main__':
         #vars(args)['lr'] = args.lr * 0.001
         #vars(args)['lr_anneal'] = False
         # stage 3, no more sense creation.
+        vars(args)['batch_size'] = old_batch_size
         model.global_embs.requires_grad = True
         model.ctx_weight.requires_grad = True
         vars(args)['stage'] = 3

@@ -16,9 +16,11 @@ cdef extern from "voidptr.h":
 
 ctypedef float (*sdot_ptr) (const int *N, const float *X, const int *incX, const float *Y, const int *incY) nogil  
 ctypedef double (*snrm2_ptr) (const int *N, const float *X, const int *incX) nogil
+ctypedef void (*saxpy_ptr) (const int *N, const float *alpha, const float *X, const int *incX, float *Y, const int *incY) nogil
 
 cdef sdot_ptr sdot=<sdot_ptr>PyCObject_AsVoidPtr(fblas.sdot._cpointer)  # float = dot(x, y)
 cdef snrm2_ptr snrm2=<snrm2_ptr>PyCObject_AsVoidPtr(fblas.snrm2._cpointer)  # sqrt(x^2)
+cdef saxpy_ptr saxpy=<saxpy_ptr>PyCObject_AsVoidPtr(fblas.saxpy._cpointer) # y += alpha * x
 
 def dot(int size, float[:] x, float[:] y):
     cdef int ONE = 1
@@ -32,6 +34,10 @@ def dot(int size, float[:] x, float[:] y):
 cdef float cos_sim(const int size, const float* x, const float* y):
     cdef int ONE = 1
     return <float> sdot(&size, x, &ONE, y, &ONE) / snrm2(&size, x, &ONE) / snrm2(&size, y, &ONE)
+
+cdef my_saxpy(const int size, const float a, const float* x, const float* y):
+    cdef int ONE = 1
+    saxpy(&size, &a, x, &ONE, y, &ONE)
 
 cdef int* unigram_table
 
@@ -231,17 +237,21 @@ def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx,
             sense_embs[n_sense_emb+create_count, :] = context_feats[b, :]
             create_count += 1
 
-            counter_list[ new_sense_id ] = 1
+            counter_list[ new_sense_id ] = 1.0
         else:
-            sense_emb = sense_embs[ sense2idx[max_sense_id], :]
+            #sense_emb = sense_embs[ sense2idx[max_sense_id], :]
 
             # see if BLAS speeds up the code.
             for d in range(emb_dim):
-                new_sense_emb[d] = sense_emb[d] * counter_list[max_sense_id] + context_feats[b,d]
+                new_sense_emb[d] = 0.0
+            my_saxpy(emb_dim, counter_list[max_sense_id], &sense_embs[ sense2idx[max_sense_id],0], &context_feats[b,0])
+            #for d in range(emb_dim):
+            #    new_sense_emb[d] = sense_emb[d] * counter_list[max_sense_id] + context_feats[b,d]
+            
+            counter_list[ max_sense_id ] += 1.0
+            my_saxpy(emb_dim, 1/counter_list[max_sense_id], &context_feats[b,0], &new_sense_emb[0])
+            sense_embs[ sense2idx[max_sense_id], :] = new_sense_emb[:]
 
-            sense_embs[ sense2idx[max_sense_id], :] = new_sense_emb
-
-            counter_list[ max_sense_id ] += 1
 
     return sense_embs[:n_sense_emb+create_count,:]
     #return type_ids
