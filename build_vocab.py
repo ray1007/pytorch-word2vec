@@ -10,6 +10,7 @@ import sys
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--train", type=str, default="", help="training file")
+parser.add_argument("--min_count", type=int, default=5, help="minimum frequency of a word")
 
 # Build the vocabulary.
 def file_split(f, delim=' \t\n', bufsize=1024):
