@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
-from collections import Counter
+from collections import Counter, deque
 from multiprocessing import set_start_method
 import pdb
 import re
@@ -167,10 +167,7 @@ def init_net(args):
         return SG(args)
 
 # Training
-def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, word_list, freq, args):
-    if args.negative > 0:
-        table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
-
+def train_process_sent_producer(p_id, data_queue, word_count_actual, table, word2idx, word_list, freq, args):
     train_file = open(args.train)
     file_pos = args.file_size * p_id // args.processes
     train_file.seek(file_pos, 0)
@@ -243,8 +240,28 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
 
                 next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
                 if args.cbow == 1: # train CBOW
-                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val,
-                                args.window, args.negative, args.vocab_size, args.batch_size, next_random)
+                    sent_id = np.array(sent_id)
+                    chunk = np.ones((len(sent_id), 2*args.window+2+2*args.negative)) * args.vocab_size
+                    neg_samples = np.random.randint(100000000, size=(len(sent_id), args.negative))
+                    #neg_samples = np.array([ table[neg_samples] for neg_id in neg_samples ])
+                    neg_mask = np.ones((len(sent_id), args.negative))
+                    for idx in range(len(sent_id)):
+                        left = sent_id[idx-args.window:idx]
+                        right = sent_id[idx+1:idx+args.window+1]
+                        chunk[idx, args.window-left.shape[0]:args.window] = left[:]
+                        chunk[idx, args.window:args.window+right.shape[0]] = right[:]
+                        chunk[idx, 2*args.window] = left.shape[0] + right.shape[0]
+                        chunk[idx, 2*args.window+1] = sent_id[idx]
+                        
+                        for j,neg_id in enumerate(neg_samples[idx,:]):
+                            neg_samples[idx, :] = np.array([ table[neg_id] for neg_id in neg_samples[idx,:] ])
+                            if neg_samples[idx, j] == sent_id[idx]:
+                                neg_mask[idx, j] = 0
+                        chunk[idx, 2*args.window+2:2*args.window+2+args.negative] = neg_samples[idx, :]
+                        chunk[idx, 2*args.window+2+args.negative:] = neg_mask[idx, :]
+
+                    #chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val,
+                    #            args.window, args.negative, args.vocab_size, args.batch_size, next_random)
                 elif args.cbow == 0: # train skipgram
                     chunk = data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val,
                                 args.window, args.negative, args.vocab_size, args.batch_size, next_random)
@@ -282,12 +299,12 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
         data_queue.put(batch_placeholder[:batch_count,:])
     data_queue.put(None)
 
-def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
+def train_process(p_id, word_count_actual, table, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
-    t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word2idx, word_list, freq, args))
+    t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, table, word2idx, word_list, freq, args))
     t.start()
 
     # get from data_queue and feed to model
@@ -341,6 +358,10 @@ if __name__ == '__main__':
 
     word_count_actual = mp.Value('L', 0)
 
+    if args.negative > 0:
+        table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
+        table = mp.Array('L', data_producer.get_unigram_table(table_ptr_val))
+
     model = init_net(args)
     model.share_memory()
     if args.cuda:
@@ -349,7 +370,7 @@ if __name__ == '__main__':
     vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
-        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model))
+        p = mp.Process(target=train_process, args=(p_id, word_count_actual, table, word2idx, word_list, freq, args, model))
         p.start()
         processes.append(p)
 

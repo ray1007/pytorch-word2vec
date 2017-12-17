@@ -64,10 +64,11 @@ def init_unigram_table(word_list, freq, int train_words):
 cdef int get_unigram_table_at_idx(int* arr, unsigned long long next_random):
     #return *(arr + ((next_random >> 16) % 100000000))
     return arr [ (next_random >> 16) % 100000000 ]
-#def test_ptr(uintptr_t ptr_val):
-#    cdef int* unigram_table
-#    unigram_table = <int*>ptr_val
-#    return [ unigram_table[a] for a in range(int(1e8)) ]
+
+def get_unigram_table(uintptr_t ptr_val):
+    cdef int* unigram_table
+    unigram_table = <int*>ptr_val
+    return [ unigram_table[a] for a in range(int(1e8)) ]
 
 #cdef uniform():
 #    return <double> rand() / RAND_MAX
