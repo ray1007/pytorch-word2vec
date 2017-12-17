@@ -500,8 +500,8 @@ if __name__ == '__main__':
         print("\nStage 2, ", time.monotonic() - args.t_start, " secs")
         print("Current # of senses: %d" % model.n_senses)
 
-        #vars(args)['lr'] = args.lr * 0.001
-        #vars(args)['lr_anneal'] = False
+        vars(args)['lr'] = args.lr * 0.001
+        vars(args)['lr_anneal'] = False
         # stage 3, no more sense creation.
         vars(args)['batch_size'] = old_batch_size
         model.global_embs.requires_grad = True
