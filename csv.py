@@ -89,8 +89,6 @@ class CSV(nn.Module):
 
         self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
-        #self.sense_embs.weight.data.zero_()
-        #self.ctx_weight.data.normal_(0,1)
 
         self.n_senses = args.vocab_size
         self.sense_capacity = args.vocab_size*2
@@ -122,50 +120,25 @@ class CSV(nn.Module):
             sense_embs = self.sense_embs(Variable(torch.LongTensor(sense_indices)))
             return sense2idx, sense_embs.data.numpy()
 
-    def add_sense_embs(self, created_sense_embs):
-        n_created = np.array(created_sense_embs).shape[0]
-        if n_created == 0:
-            return
-        created_sense_embs = torch.FloatTensor(np.array(created_sense_embs))
-        self.sense_embs.weight.data[self.n_senses:self.n_senses+n_created, :] = created_sense_embs
-        self.n_senses += n_created
-
-        # max number of created_sense_emb = batch_size
-        # reallocate sense_embs if needed to ensure enough capacity.
-        if self.n_senses + self.batch_size > self.sense_capacity:
-            new_capacity = self.sense_capacity * 3 // 2
-            new_embs = nn.Embedding(new_capacity, self.size, sparse=True)
-            new_embs.weight.data[:self.n_senses, :] = self.sense_embs.weight.data[:self.n_senses, :]
-            self.sense_embs = new_embs
-            #self.sense_embs = self.sense_embs.cuda()
-            self.sense_capacity = new_capacity
-
-            return True
-        return False
-
-    def forward(self, data, with_neg=True):
+    def forward(self, data):
         ctx_type_indices = data[:, 0:2*self.window]
         pos_sense_idx = data[:, 2*self.window+1]
-        if with_neg:
-            neg_sense_indices = data[:, 2*self.window+2:2*self.window+2+self.negative]
-            neg_mask = data[:, 2*self.window+2+self.negative:].float()
+        neg_sense_indices = data[:, 2*self.window+2:2*self.window+2+self.negative]
+        neg_mask = data[:, 2*self.window+2+self.negative:].float()
 
         ctx_type_embs = self.global_embs(ctx_type_indices)
         pos_sense_embs = self.sense_embs(pos_sense_idx)
-        if with_neg:
-            neg_sense_embs = self.sense_embs(neg_sense_indices)
+        neg_sense_embs = self.sense_embs(neg_sense_indices)
 
         ctx_feats = torch.sum(ctx_type_embs * self.ctx_weight, 1, keepdim=True)
 
         # Neg Log Likelihood
         pos_ips = torch.sum(ctx_feats[:,0,:] * pos_sense_embs, 1)
         pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)))
-        if with_neg:
-            neg_ips = torch.bmm(neg_sense_embs, ctx_feats.permute(0,2,1))[:,:,0]
-            neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
-            return pos_loss + neg_loss
-        else:
-            return pos_loss
+        neg_ips = torch.bmm(neg_sense_embs, ctx_feats.permute(0,2,1))[:,:,0]
+        neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
+
+        return pos_loss + neg_loss
 
 
 # Initialize model.
@@ -362,7 +335,8 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 else:
                     data = Variable(torch.LongTensor(chunk), requires_grad=False)
 
-                type_ids = chunk[:, 2*args.window+1:2*args.window+2+2*args.negative]
+                #type_ids = chunk[:, 2*args.window+1:2*args.window+2+2*args.negative]
+                type_ids = chunk[:, 2*args.window+1:2*args.window+2+args.negative]
                 type_ids = np.reshape(type_ids, (type_ids.shape[0] * type_ids.shape[1]))
                 sense2idx, sense_embs = model.get_possible_sense_embs(type_ids.tolist())
 
@@ -388,7 +362,8 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
 
-    counter_list = [ 1.0 for _ in range(model.sense_capacity) ]
+    #counter_list = [ 1.0 for _ in range(model.sense_capacity) ]
+    counter_list = np.ones((model.sense_capacity),dtype='float32')
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
@@ -420,10 +395,6 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
                              np.concatenate((sense_embs,zero),0), model.word2sense, counter_list, chunk.shape[0],
                              sense_embs.shape[0], args.size, args.window, args.delta, model.n_senses)
 
-            #if model.add_sense_embs(created_sense_embs):
-            #    counter_list += [ 1 for _ in range(model.sense_capacity - len(counter_list))]
-            #    print("\nexapnded sense_embs: %d" % model.n_senses)
-
             # update sense_embs
             for s_id in sense2idx:
                 idx = sense2idx[s_id]
@@ -435,7 +406,8 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
 
             if model.n_senses + args.batch_size > model.sense_capacity:
                 new_capacity = model.sense_capacity * 3 // 2
-                counter_list += [ 1.0 for _ in range(new_capacity - model.sense_capacity)]
+                #counter_list += [ 1.0 for _ in range(new_capacity - model.sense_capacity)]
+                counter_list = np.concatenate( (counter_list, np.ones((new_capacity - model.sense_capacity),dtype='float32')), axis=0)
                 new_embs = nn.Embedding(new_capacity, args.size, sparse=True)
                 new_embs.weight.data[:model.n_senses, :] = model.sense_embs.weight.data[:model.n_senses, :]
                 model.sense_embs = new_embs
@@ -500,9 +472,8 @@ if __name__ == '__main__':
         print("\nStage 2, ", time.monotonic() - args.t_start, " secs")
         print("Current # of senses: %d" % model.n_senses)
 
-        vars(args)['lr'] = args.lr * 0.001
-        vars(args)['lr_anneal'] = False
         # stage 3, no more sense creation.
+        vars(args)['lr'] = args.lr * 0.0001
         vars(args)['batch_size'] = old_batch_size
         model.global_embs.requires_grad = True
         model.ctx_weight.requires_grad = True

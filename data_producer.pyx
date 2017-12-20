@@ -35,7 +35,7 @@ cdef float cos_sim(const int size, const float* x, const float* y):
     cdef int ONE = 1
     return <float> sdot(&size, x, &ONE, y, &ONE) / snrm2(&size, x, &ONE) / snrm2(&size, y, &ONE)
 
-cdef my_saxpy(const int size, const float a, const float* x, const float* y):
+cdef my_saxpy(const int size, const float a, const float* x, float* y):
     cdef int ONE = 1
     saxpy(&size, &a, x, &ONE, y, &ONE)
 
@@ -213,9 +213,9 @@ def write_embs(str fn, word_list, float[:,:] embs, int vocab_size, int dim):
             out_f.write('\n')
         
 
-def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx, float[:,:] sense_embs, word2sense, counter_list, int type_ids_len, int n_sense_emb, int emb_dim, int window, float delta, int current_n_sense):
+def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx, float[:,:] sense_embs, word2sense, float[:] counter_list, int type_ids_len, int n_sense_emb, int emb_dim, int window, float delta, int current_n_sense):
     cdef int b, d, pos, t_id, s_id
-    cdef int max_sense_id, create_count
+    cdef int max_sense_id, new_sense_id, create_count
     cdef float sim, max_sim
     cdef float[:] new_sense_emb = np.zeros([emb_dim], dtype=np.float32)
 
@@ -239,26 +239,24 @@ def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx,
 
             counter_list[ new_sense_id ] = 1.0
         else:
-            #sense_emb = sense_embs[ sense2idx[max_sense_id], :]
+            for d in range(emb_dim):
+                new_sense_emb[d] = sense_embs[ sense2idx[max_sense_id], d] * counter_list[max_sense_id] + context_feats[b,d]
 
+            '''
             # see if BLAS speeds up the code.
             for d in range(emb_dim):
                 new_sense_emb[d] = 0.0
             my_saxpy(emb_dim, counter_list[max_sense_id], &sense_embs[ sense2idx[max_sense_id],0], &context_feats[b,0])
-            #for d in range(emb_dim):
-            #    new_sense_emb[d] = sense_emb[d] * counter_list[max_sense_id] + context_feats[b,d]
             
             counter_list[ max_sense_id ] += 1.0
             my_saxpy(emb_dim, 1/counter_list[max_sense_id], &context_feats[b,0], &new_sense_emb[0])
+            '''
+
             sense_embs[ sense2idx[max_sense_id], :] = new_sense_emb[:]
 
 
     return sense_embs[:n_sense_emb+create_count,:]
-    #return type_ids
 
-'''
-def select_sense(long[:,:] type_mat, float[:,:] context_feats, float[:,:] sense_embs, word2sense, creates, int batch_size, int emb_dim, int negative, int current_n_sense):
-'''
 def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:] sense_embs, word2sense, int chunk_size, int emb_dim, int window, int negative):
     cdef int b, d, pos, t_id, s_id
     cdef int max_sense_id
@@ -266,7 +264,7 @@ def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:
     #cdef long[:,:] data = np.zeros([chunk_size, 2*window+2+2*negative], dtype=np.int64)
 
     for b in range(chunk_size):
-        for pos in range(2*window+1, 2*window+2+2*negative):
+        for pos in range(2*window+1, 2*window+2+negative):
             t_id = chunk[b, pos]
             max_sense_id = -1
             max_sim = -10.0
