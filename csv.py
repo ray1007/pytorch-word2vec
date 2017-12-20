@@ -250,7 +250,7 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
 
                 next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
                 chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val, args.window,
-                            neg, args.vocab_size, args.batch_size, next_random, False)
+                            neg, args.vocab_size, args.batch_size, next_random)
 
                 chunk_pos = 0
                 while chunk_pos < chunk.shape[0]:
