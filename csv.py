@@ -65,11 +65,15 @@ def build_vocab(args):
         if word_count % 10000 == 0:
             sys.stdout.write('%d\r' % len(vocab))
     freq = {k:v for k,v in vocab.items() if v >= args.min_count}
+    unk_count = word_count - sum([freq[k] for k in freq])
     word_count = sum([freq[k] for k in freq])
     word_list = sorted(freq, key=freq.get, reverse=True)
+    freq['</unk>'] = unk_count
+
     word2idx = {}
+    word2idx['</unk>'] = 0
     for i,w in enumerate(word_list):
-        word2idx[w] = i
+        word2idx[w] = i+1
 
     print("Vocab size: %ld" % len(word2idx))
     print("Words in train file: %ld" % word_count)
@@ -217,12 +221,16 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, 
                 elif s == ' ' or s == '\t':
                     if prev in word2idx:
                         sentence.append(prev)
+                    else:
+                        sentence.append('</unk>')
                     prev = ''
                     if len(sentence) >= MAX_SENT_LEN:
                         break
                 elif s == '\n':
                     if prev in word2idx:
                         sentence.append(prev)
+                    else:
+                        sentence.append('</unk>')
                     prev = ''
                     break
                 else:
