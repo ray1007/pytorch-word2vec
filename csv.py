@@ -68,6 +68,7 @@ def build_vocab(args):
     unk_count = word_count - sum([freq[k] for k in freq])
     word_count = sum([freq[k] for k in freq])
     word_list = sorted(freq, key=freq.get, reverse=True)
+    word_list.insert(0, '</unk>')
     freq['</unk>'] = unk_count
 
     word2idx = {}
