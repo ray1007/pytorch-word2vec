@@ -264,17 +264,20 @@ def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:
     #cdef long[:,:] data = np.zeros([chunk_size, 2*window+2+2*negative], dtype=np.int64)
 
     for b in range(chunk_size):
-        for pos in range(2*window+1, 2*window+2+negative):
-            t_id = chunk[b, pos]
-            max_sense_id = -1
-            max_sim = -10.0
-            for s_id in word2sense[t_id]:
-                sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
-                if sim > max_sim:
-                    max_sim = sim
-                    max_sense_id = s_id
+        pos = 2*window+1
+        t_id = chunk[b, pos]
+        max_sense_id = -1
+        max_sim = -10.0
+        for s_id in word2sense[t_id]:
+            sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
+            if sim > max_sim:
+                max_sim = sim
+                max_sense_id = s_id
+        chunk[b, pos] = max_sense_id
 
-            chunk[b, pos] = max_sense_id
+        for pos in range(2*window+2, 2*window+2+negative):
+            t_id = chunk[b, pos]
+            chunk[b, pos] = word2sense[t_id][ rand() % len(word2sense[t_id]) ]
 
     return chunk
 
