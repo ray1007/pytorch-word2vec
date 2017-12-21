@@ -448,6 +448,10 @@ if __name__ == '__main__':
         p.join()
     del processes
     print("\nStage 1, ", time.monotonic() - args.t_start, " secs ", word_count_actual.value)
+    filename = args.save
+    if not filename.endswith('.pth.tar'):
+        filename += '.stage1.pth.tar'
+    save_model(filename, model, args, word2idx)
 
     if args.multi_proto:
         # stage 2, create new sense in a non-parametric way.
@@ -471,6 +475,10 @@ if __name__ == '__main__':
             model.cuda()
         print("\nStage 2, ", time.monotonic() - args.t_start, " secs")
         print("Current # of senses: %d" % model.n_senses)
+        filename = args.save
+        if not filename.endswith('.pth.tar'):
+            filename += '.stage2.pth.tar'
+        save_model(filename, model, args, word2idx)
 
         # stage 3, no more sense creation.
         vars(args)['lr'] = args.lr * 0.0001
@@ -495,7 +503,7 @@ if __name__ == '__main__':
     # save model
     filename = args.save
     if not filename.endswith('.pth.tar'):
-        filename += '.pth.tar'
+        filename += '.stage3.pth.tar'
     save_model(filename, model, args, word2idx)
     print("")
 
