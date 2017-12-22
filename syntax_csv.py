@@ -24,6 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--train", type=str, default="", help="training file")
 parser.add_argument("--save", type=str, default="csv.pth.tar", help="saved model filename")
 parser.add_argument("--size", type=int, default=300, help="word embedding dimension")
+parser.add_argument("--syn_dim", type=int, default=50, help="POS & Dep embedding dimension")
 parser.add_argument("--window", type=int, default=5, help="context window size")
 parser.add_argument("--sample", type=float, default=1e-4, help="subsample threshold")
 parser.add_argument("--negative", type=int, default=10, help="number of negative samples")
@@ -62,11 +63,12 @@ class SynCSV(nn.Module):
     def __init__(self, args):
         super(SynCSV, self).__init__()
         self.global_embs = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
-        self.pos_embs = nn.Embedding(args.pos_size, args.size)
-        self.dep_embs = nn.Embedding(args.dep_size, args.size)
+        self.pos_embs = nn.Embedding(args.pos_size, args.syn_dim)
+        self.dep_embs = nn.Embedding(args.dep_size, args.syn_dim)
         self.sense_embs = nn.Embedding(args.vocab_size*2, args.size, sparse=True)
         self.word2sense = [ [i] for i in range(args.vocab_size) ]
         self.ctx_weight = torch.nn.Parameter(torch.ones(2*args.window, args.size))
+        self.syn_layer = torch.nn.Linear(4*args.syn_dim, args.size)
 
         self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
@@ -101,27 +103,6 @@ class SynCSV(nn.Module):
             sense_embs = self.sense_embs(Variable(torch.LongTensor(sense_indices)))
             return sense2idx, sense_embs.data.numpy()
 
-    def add_sense_embs(self, created_sense_embs):
-        n_created = np.array(created_sense_embs).shape[0]
-        if n_created == 0:
-            return
-        created_sense_embs = torch.FloatTensor(np.array(created_sense_embs))
-        self.sense_embs.weight.data[self.n_senses:self.n_senses+n_created, :] = created_sense_embs
-        self.n_senses += n_created
-
-        # max number of created_sense_emb = batch_size
-        # reallocate sense_embs if needed to ensure enough capacity.
-        if self.n_senses + self.batch_size > self.sense_capacity:
-            new_capacity = self.sense_capacity * 3 // 2
-            new_embs = nn.Embedding(new_capacity, self.size, sparse=True)
-            new_embs.weight.data[:self.n_senses, :] = self.sense_embs.weight.data[:self.n_senses, :]
-            self.sense_embs = new_embs
-            #self.sense_embs = self.sense_embs.cuda()
-            self.sense_capacity = new_capacity
-
-            return True
-        return False
-
     def forward(self, parent_pos_idx, parent_dep_idx, children_pos_inds, children_dep_inds, children_len,
                 ctx_type_indices, pos_sense_idx, neg_sense_indices, neg_mask):
         parent_pos_embs = self.pos_embs(parent_pos_idx)
@@ -129,6 +110,8 @@ class SynCSV(nn.Module):
 
         children_pos_embs = self.pos_embs(children_pos_inds)
         children_dep_embs = self.dep_embs(children_dep_inds)
+        syn_feats = self.syn_layer( torch.cat((parent_dep_embs, parent_pos_embs, 
+                                               children_dep_embs, children_pos_embs), 1) )
 
         ctx_type_indices = data[:, 2+2*self.n_children:2+2*self.n_children+self.window]
         pos_sense_idx = data[:, 2*self.window+1]
@@ -140,11 +123,12 @@ class SynCSV(nn.Module):
         neg_sense_embs = self.sense_embs(neg_sense_indices)
 
         ctx_feats = torch.sum(ctx_type_embs * self.ctx_weight, 1, keepdim=True)
+        sel_feats = ctx_feats +syn_feats
 
         # Neg Log Likelihood
-        pos_ips = torch.sum(ctx_feats[:,0,:] * pos_sense_embs, 1)
+        pos_ips = torch.sum(sel_feats[:,0,:] * pos_sense_embs, 1)
         pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)))
-        neg_ips = torch.bmm(neg_sense_embs, ctx_feats.permute(0,2,1))[:,:,0]
+        neg_ips = torch.bmm(neg_sense_embs, sel_feats.permute(0,2,1))[:,:,0]
         neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
         return pos_loss + neg_loss
 
