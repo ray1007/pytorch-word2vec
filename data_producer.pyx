@@ -239,8 +239,9 @@ def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx,
 
             counter_list[ new_sense_id ] = 1.0
         else:
+            s_id = sense2idx[max_sense_id]
             for d in range(emb_dim):
-                new_sense_emb[d] = sense_embs[ sense2idx[max_sense_id], d] * counter_list[max_sense_id] / (counter_list[max_sense_id]+1) + context_feats[b,d] / (counter_list[max_sense_id]+1)
+                new_sense_emb[d] = sense_embs[s_id, d] * counter_list[max_sense_id] / (counter_list[max_sense_id]+1) + context_feats[b,d] / (counter_list[max_sense_id]+1)
                 #new_sense_emb[d] = sense_embs[ sense2idx[max_sense_id], d] * counter_list[max_sense_id] + context_feats[b,d]
 
             counter_list[ max_sense_id ] += 1.0
