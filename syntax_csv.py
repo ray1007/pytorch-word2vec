@@ -24,14 +24,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--train", type=str, default="", help="training file")
 parser.add_argument("--save", type=str, default="csv.pth.tar", help="saved model filename")
 parser.add_argument("--size", type=int, default=300, help="word embedding dimension")
+parser.add_argument("--syn_dim", type=int, default=50, help="POS & Dep embedding dimension")
 parser.add_argument("--window", type=int, default=5, help="context window size")
-parser.add_argument("--sample", type=float, default=1e-4, help="subsample threshold")
-parser.add_argument("--negative", type=int, default=10, help="number of negative samples")
+parser.add_argument("--sample", type=float, default=1e-5, help="subsample threshold")
+parser.add_argument("--negative", type=int, default=5, help="number of negative samples")
 parser.add_argument("--delta", type=float, default=0.15, help="create new sense for a type if similarity lower than this value.")
 parser.add_argument("--min_count", type=int, default=5, help="minimum frequency of a word")
 parser.add_argument("--processes", type=int, default=4, help="number of processes")
-parser.add_argument("--num_workers", type=int, default=6, help="number of workers for data processsing")
-parser.add_argument("--iter", type=int, default=5, help="number of iterations")
+parser.add_argument("--iter", type=int, default=3, help="number of iterations")
 parser.add_argument("--lr", type=float, default=-1.0, help="initial learning rate")
 parser.add_argument("--batch_size", type=int, default=100, help="(max) batch size")
 parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
@@ -62,11 +62,12 @@ class SynCSV(nn.Module):
     def __init__(self, args):
         super(SynCSV, self).__init__()
         self.global_embs = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
-        self.pos_embs = nn.Embedding(args.pos_size, args.size)
-        self.dep_embs = nn.Embedding(args.dep_size, args.size)
+        self.pos_embs = nn.Embedding(args.pos_size, args.syn_dim)
+        self.dep_embs = nn.Embedding(args.dep_size, args.syn_dim)
         self.sense_embs = nn.Embedding(args.vocab_size*2, args.size, sparse=True)
         self.word2sense = [ [i] for i in range(args.vocab_size) ]
         self.ctx_weight = torch.nn.Parameter(torch.ones(2*args.window, args.size))
+        self.syn_layer = torch.nn.Linear(4*args.syn_dim, args.size)
 
         self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
@@ -79,10 +80,17 @@ class SynCSV(nn.Module):
         self.negative = args.negative
         self.pad_idx = args.vocab_size
 
-    def get_context_feats(self, ctx_type_indices):
+    def get_sel_feats(self, ctx_type_indices, parent_pos_idx, parent_dep_idx, 
+                      children_pos_inds, children_dep_inds, children_len):
+        parent_pos_embs = self.pos_embs(parent_pos_idx)
+        parent_dep_embs = self.dep_embs(parent_dep_idx)
+        children_pos_embs = self.pos_embs(children_pos_inds)
+        children_dep_embs = self.dep_embs(children_dep_inds)
+        syn_feats = self.syn_layer( torch.cat((parent_dep_embs, parent_pos_embs, 
+                                               children_dep_embs, children_pos_embs), 1) )
         ctx_type_embs = self.global_embs(ctx_type_indices)
         ctx_feats = torch.sum(ctx_type_embs * self.ctx_weight, 1)
-        return ctx_feats
+        return ctx_feats + syn_feats
 
     def get_possible_sense_embs(self, type_indices, cuda=True):
         sense_indices = []
@@ -101,27 +109,6 @@ class SynCSV(nn.Module):
             sense_embs = self.sense_embs(Variable(torch.LongTensor(sense_indices)))
             return sense2idx, sense_embs.data.numpy()
 
-    def add_sense_embs(self, created_sense_embs):
-        n_created = np.array(created_sense_embs).shape[0]
-        if n_created == 0:
-            return
-        created_sense_embs = torch.FloatTensor(np.array(created_sense_embs))
-        self.sense_embs.weight.data[self.n_senses:self.n_senses+n_created, :] = created_sense_embs
-        self.n_senses += n_created
-
-        # max number of created_sense_emb = batch_size
-        # reallocate sense_embs if needed to ensure enough capacity.
-        if self.n_senses + self.batch_size > self.sense_capacity:
-            new_capacity = self.sense_capacity * 3 // 2
-            new_embs = nn.Embedding(new_capacity, self.size, sparse=True)
-            new_embs.weight.data[:self.n_senses, :] = self.sense_embs.weight.data[:self.n_senses, :]
-            self.sense_embs = new_embs
-            #self.sense_embs = self.sense_embs.cuda()
-            self.sense_capacity = new_capacity
-
-            return True
-        return False
-
     def forward(self, parent_pos_idx, parent_dep_idx, children_pos_inds, children_dep_inds, children_len,
                 ctx_type_indices, pos_sense_idx, neg_sense_indices, neg_mask):
         parent_pos_embs = self.pos_embs(parent_pos_idx)
@@ -129,6 +116,8 @@ class SynCSV(nn.Module):
 
         children_pos_embs = self.pos_embs(children_pos_inds)
         children_dep_embs = self.dep_embs(children_dep_inds)
+        syn_feats = self.syn_layer( torch.cat((parent_dep_embs, parent_pos_embs, 
+                                               children_dep_embs, children_pos_embs), 1) )
 
         ctx_type_indices = data[:, 2+2*self.n_children:2+2*self.n_children+self.window]
         pos_sense_idx = data[:, 2*self.window+1]
@@ -140,11 +129,12 @@ class SynCSV(nn.Module):
         neg_sense_embs = self.sense_embs(neg_sense_indices)
 
         ctx_feats = torch.sum(ctx_type_embs * self.ctx_weight, 1, keepdim=True)
+        sel_feats = ctx_feats + syn_feats
 
         # Neg Log Likelihood
-        pos_ips = torch.sum(ctx_feats[:,0,:] * pos_sense_embs, 1)
+        pos_ips = torch.sum(sel_feats[:,0,:] * pos_sense_embs, 1)
         pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)))
-        neg_ips = torch.bmm(neg_sense_embs, ctx_feats.permute(0,2,1))[:,:,0]
+        neg_ips = torch.bmm(neg_sense_embs, sel_feats.permute(0,2,1))[:,:,0]
         neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
         return pos_loss + neg_loss
 
@@ -177,6 +167,8 @@ def load_model(filename):
     model.dep_embs.weight.data = checkpoint['params']['dep_embs.weight']
     model.sense_embs.weight.data = checkpoint['params']['sense_embs.weight']
     model.ctx_weight.data = checkpoint['params']['ctx_weight']
+    model.syn_layer.weight.data = checkpoint['params']['syn_layer.weight']
+    model.syn_layer.bias.data = checkpoint['params']['syn_layer.bias']
     model.word2sense = checkpoint['word2sense']
     model.n_senses = checkpoint['n_senses']
 
@@ -345,7 +337,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 else:
                     data = Variable(torch.LongTensor(chunk), requires_grad=False)
 
-                type_ids = chunk[:, 2*args.window+1:2*args.window+2+2*args.negative]
+                type_ids = chunk[:, 2*args.window+1:2*args.window+2+args.negative]
                 type_ids = np.reshape(type_ids, (type_ids.shape[0] * type_ids.shape[1]))
                 sense2idx, sense_embs = model.get_possible_sense_embs(type_ids.tolist())
 
@@ -371,7 +363,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
 
-    counter_list = [ 1 for _ in range(model.sense_capacity) ]
+    counter_list = np.ones((model.sense_capacity),dtype='float32')
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
@@ -403,10 +395,6 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
                              np.concatenate((sense_embs,zero),0), model.word2sense, counter_list, chunk.shape[0],
                              sense_embs.shape[0], args.size, args.window, args.delta, model.n_senses)
 
-            #if model.add_sense_embs(created_sense_embs):
-            #    counter_list += [ 1 for _ in range(model.sense_capacity - len(counter_list))]
-            #    print("\nexapnded sense_embs: %d" % model.n_senses)
-
             # update sense_embs
             for s_id in sense2idx:
                 idx = sense2idx[s_id]
@@ -418,11 +406,12 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
 
             if model.n_senses + args.batch_size > model.sense_capacity:
                 new_capacity = model.sense_capacity * 3 // 2
-                counter_list += [ 1 for _ in range(new_capacity - model.sense_capacity)]
+                counter_list = np.concatenate( (counter_list, np.ones((new_capacity - model.sense_capacity),dtype='float32')), axis=0)
                 new_embs = nn.Embedding(new_capacity, args.size, sparse=True)
                 new_embs.weight.data[:model.n_senses, :] = model.sense_embs.weight.data[:model.n_senses, :]
                 model.sense_embs = new_embs
                 model.sense_capacity = new_capacity
+                print("\nexapnded sense_embs: %d" % model.n_senses)
     t.join()
 
 
@@ -465,10 +454,16 @@ if __name__ == '__main__':
         p.join()
     del processes
     print("\nStage 1, ", time.monotonic() - args.t_start, " secs ", word_count_actual.value)
+    filename = args.save
+    if not filename.endswith('.pth.tar'):
+        filename += '.stage1.pth.tar'
+    save_model(filename, model, args, word2idx)
 
     if args.multi_proto:
         # stage 2, create new sense in a non-parametric way.
         # Freeze model paramters except sense_embs, and use only 1 process to prevent race condition
+        old_batch_size = vars(args)['batch_size']
+        vars(args)['batch_size'] = 5000
         model.global_embs.requires_grad = False
         model.ctx_weight.requires_grad = False
         model.sense_embs = model.sense_embs.cpu()
@@ -485,10 +480,15 @@ if __name__ == '__main__':
         if args.cuda:
             model.cuda()
         print("\nStage 2, ", time.monotonic() - args.t_start, " secs")
+        print("Current # of senses: %d" % model.n_senses)
+        filename = args.save
+        if not filename.endswith('.pth.tar'):
+            filename += '.stage2.pth.tar'
+        save_model(filename, model, args, word2idx)
 
-        #vars(args)['lr'] = args.lr * 0.001
-        #vars(args)['lr_anneal'] = False
         # stage 3, no more sense creation.
+        vars(args)['lr'] = args.lr * 0.0001
+        vars(args)['batch_size'] = old_batch_size
         model.global_embs.requires_grad = True
         model.ctx_weight.requires_grad = True
         vars(args)['stage'] = 3
@@ -509,7 +509,7 @@ if __name__ == '__main__':
     # save model
     filename = args.save
     if not filename.endswith('.pth.tar'):
-        filename += '.pth.tar'
+        filename += '.stage3.pth.tar'
     save_model(filename, model, args, word2idx)
     print("")
 
