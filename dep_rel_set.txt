@@ -32,7 +32,7 @@ orphan
 parataxis
 punct
 reparandum
-root
 vocative
 xcomp
+root
 
