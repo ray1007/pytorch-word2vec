@@ -15,12 +15,11 @@ class SentenceDataset(Dataset):
             vocab_map: LookupTable
         '''
         self.vocab_map = vocab_map
+        self.sents = []
         with open(filepath, 'r') as f:
-            tokens = line.strip().split()
-            self.sents = [
-                np.array([self.vocab_map[t] for t in tokens], dtype='i')
-                for line in f
-            ]
+            for line in f:
+                tokens = [self.vocab_map[t] for t in line.strip().split()]
+                self.sents.append(np.array(tokens, dtype='i'))
 
     def __getitem__(self, index):
         return self.sents[index]
@@ -37,21 +36,13 @@ class CBOWLoaderIter:
         self.window_size = loader.window_size
         self.padding_index = loader.padding_index
 
-        neg_prob = sum_normalize(idx_count ** loader.neg_power)
+        neg_prob = sum_normalize(loader.idx_count ** loader.neg_power)
         self.neg_table = AliasTable(neg_prob)
         ratio = loader.sub_threshold / sum_normalize(loader.idx_count)
         self.sub_prob = np.sqrt(ratio) + ratio
 
         self.in_iter = iter(loader.in_loader)
         self.queue = []
-
-    def get_next_sent(self):
-        if self.loader.cached:
-            return next(self.cache_iter)
-        else:
-            sent = next(self.in_iter)[0]
-            self.loader.cache.append(sent)
-            return sent
 
     def gen_context(self, sent):
         size = self.window_size
@@ -70,8 +61,7 @@ class CBOWLoaderIter:
         n_sample = sum(len(x) for x, y in self.queue)
         while n_sample < self.batch_size:
             try:
-                # get the next sentence, use cache if available
-                sent = self.get_next_sent()
+                sent = next(self.in_iter)[0]
             except StopIteration:
                 break
 
@@ -86,8 +76,6 @@ class CBOWLoaderIter:
             self.queue.append((sent, ctx))
 
         if n_sample == 0:
-            # end of iteration, set cached to True
-            self.loader.cached = True
             raise StopIteration
 
         bound = n_sample - self.batch_size
