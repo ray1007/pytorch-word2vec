@@ -45,14 +45,6 @@ class CBOWLoaderIter:
         self.in_iter = iter(loader.in_loader)
         self.queue = []
 
-    def get_next_sent(self):
-        if self.loader.cached:
-            return next(self.cache_iter)
-        else:
-            sent = next(self.in_iter)[0]
-            self.loader.cache.append(sent)
-            return sent
-
     def gen_context(self, sent):
         size = self.window_size
         # pad zeros
@@ -70,8 +62,7 @@ class CBOWLoaderIter:
         n_sample = sum(len(x) for x, y in self.queue)
         while n_sample < self.batch_size:
             try:
-                # get the next sentence, use cache if available
-                sent = self.get_next_sent()
+                sent = next(self.in_iter)[0]
             except StopIteration:
                 break
 
@@ -86,8 +77,6 @@ class CBOWLoaderIter:
             self.queue.append((sent, ctx))
 
         if n_sample == 0:
-            # end of iteration, set cached to True
-            self.loader.cached = True
             raise StopIteration
 
         bound = n_sample - self.batch_size
