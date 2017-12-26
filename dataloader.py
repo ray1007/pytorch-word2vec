@@ -18,8 +18,11 @@ class SentenceDataset(Dataset):
         self.sents = []
         with open(filepath, 'r') as f:
             for line in f:
-                tokens = [self.vocab_map[t] for t in line.strip().split()]
-                self.sents.append(np.array(tokens, dtype='i'))
+                tokens_it = filter(
+                    lambda x: x is not None,
+                    (self.vocab_map.get(t, None) for t in line.strip().split())
+                )
+                self.sents.append(np.array(tokens_it, dtype='i'))
 
     def __getitem__(self, index):
         return self.sents[index]
