@@ -15,12 +15,11 @@ class SentenceDataset(Dataset):
             vocab_map: LookupTable
         '''
         self.vocab_map = vocab_map
+        self.sents = []
         with open(filepath, 'r') as f:
-            tokens = line.strip().split()
-            self.sents = [
-                np.array([self.vocab_map[t] for t in tokens], dtype='i')
-                for line in f
-            ]
+            for line in f:
+                tokens = [self.vocab_map[t] for t in line.strip().split()]
+                self.sents.append(np.array(tokens, dtype='i'))
 
     def __getitem__(self, index):
         return self.sents[index]
@@ -37,7 +36,7 @@ class CBOWLoaderIter:
         self.window_size = loader.window_size
         self.padding_index = loader.padding_index
 
-        neg_prob = sum_normalize(idx_count ** loader.neg_power)
+        neg_prob = sum_normalize(loader.idx_count ** loader.neg_power)
         self.neg_table = AliasTable(neg_prob)
         ratio = loader.sub_threshold / sum_normalize(loader.idx_count)
         self.sub_prob = np.sqrt(ratio) + ratio
