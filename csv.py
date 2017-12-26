@@ -398,8 +398,9 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
             # update sense_embs
             for s_id in sense2idx:
                 idx = sense2idx[s_id]
-                new_sense_emb = torch.FloatTensor(sense_embs[idx, :])
-                model.sense_embs.weight.data[s_id, :] = new_sense_emb
+                #new_sense_emb = torch.FloatTensor(sense_embs[idx, :])
+                #model.sense_embs.weight.data[s_id, :] = new_sense_emb
+                model.sense_embs.weight.data[s_id, :] = torch.FloatTensor(sense_embs[idx, :])
 
                 if s_id >= model.n_senses:
                     model.n_senses += 1
@@ -414,6 +415,13 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
                 model.sense_capacity = new_capacity
                 print("\nexapnded sense_embs: %d" % model.n_senses)
     t.join()
+    
+    # resize sense_embs
+    new_embs = nn.Embedding(model.n_senses, args.size, sparse=True)
+    for idx in range(model.n_senses):
+        new_embs.weight.data[idx, :] = model.sense_embs.weight.data[idx, :] / counter_list[idx]
+    model.sense_embs = new_embs
+    print(counter_list.max(), counter_list.min())
 
 
 if __name__ == '__main__':
@@ -467,10 +475,6 @@ if __name__ == '__main__':
         vars(args)['t_start'] = time.monotonic()
         train_process_stage2(0, word_count_actual, word2idx, word_list, freq, args, model)
 
-        # resize sense_embs
-        new_embs = nn.Embedding(model.n_senses, args.size, sparse=True)
-        new_embs.weight.data[:model.n_senses, :] = model.sense_embs.weight.data[:model.n_senses, :]
-        model.sense_embs = new_embs
         if args.cuda:
             model.cuda()
         print("\nStage 2, ", time.monotonic() - args.t_start, " secs")
