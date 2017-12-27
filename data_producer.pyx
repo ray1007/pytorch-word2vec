@@ -212,6 +212,49 @@ def write_embs(str fn, word_list, float[:,:] embs, int vocab_size, int dim):
                 out_f.write( '%.6f ' % embs[i, j] )
             out_f.write('\n')
         
+def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, float[:,:] sense_embs, word2sense, float[:] counter_list, int type_ids_len, int n_sense_emb, int emb_dim, int window, float delta, int current_n_sense):
+    cdef int b, d, pos, t_id, s_id, idx
+    cdef int max_sense_id, new_sense_id, create_count
+    cdef float sim, max_sim, n1, n2
+    cdef float[:] new_sense_emb = np.zeros([emb_dim], dtype=np.float32)
+
+    create_count = 0
+    for b in range(type_ids_len):
+        t_id = type_ids[b]
+        max_sense_id = -1
+        max_sim = delta 
+        for s_id in word2sense[t_id]:
+            sim = 0.0 
+            n1 = 0.0
+            n2 = 0.0
+            idx = sense2idx[s_id]
+            for d in range(emb_dim):
+                sim += context_feats[b,d] * sense_embs[idx,d]
+                n1 += context_feats[b,d] * context_feats[b,d]
+                n2 += sense_embs[idx,d] * sense_embs[idx,d]
+            sim = sim / n1 / n2
+            #sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
+            if sim > max_sim:
+                max_sim = sim
+                max_sense_id = s_id
+
+        if max_sense_id == -1:
+            new_sense_id = current_n_sense + create_count
+            word2sense[t_id].append(new_sense_id)
+            sense2idx[new_sense_id] = n_sense_emb + create_count
+            sense_embs[n_sense_emb+create_count, :] = context_feats[b, :]
+            create_count += 1
+
+            counter_list[ new_sense_id ] = 1.0
+        else:
+            idx = sense2idx[max_sense_id]
+            for d in range(emb_dim):
+                sense_embs[idx,d] += context_feats[b,d]
+
+            counter_list[ max_sense_id ] += 1.0
+
+    return sense_embs[:n_sense_emb+create_count,:]
+
 
 def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx, float[:,:] sense_embs, word2sense, float[:] counter_list, int type_ids_len, int n_sense_emb, int emb_dim, int window, float delta, int current_n_sense):
     cdef int b, d, pos, t_id, s_id, idx
