@@ -57,10 +57,10 @@ class CBOWLoaderIter:
         ctx = np.concatenate((wds[:-(size+1)], wds[(size+1):]), axis=1)
 
         # dynamic window size
-        for word_ctx in ctx:
-            dyn_padding = np.random.randint(self.window_size + 1)
-            word_ctx[:dyn_padding] = self.padding_index
-            word_ctx[-dyn_padding:] = self.padding_index
+        dyn_padding = np.random.randint(self.window_size + 1, size=len(sent))
+        for word_ctx, d in zip(ctx, dyn_padding):
+            word_ctx[:d] = self.padding_index
+            word_ctx[-d:] = self.padding_index
 
         return ctx
 
