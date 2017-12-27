@@ -362,8 +362,8 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
 
-    #counter_list = [ 1.0 for _ in range(model.sense_capacity) ]
-    counter_list = np.ones((model.sense_capacity),dtype='float32')
+    sense_embs = model.sense_embs.weight.data.numpy()
+    counter_list = np.ones((model.sense_capacity), dtype='float32')
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
@@ -388,40 +388,28 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
 
             context_feats = model.get_context_feats(data[:, :2*args.window])
             context_feats = context_feats.cpu().data.numpy()
-            sense2idx, sense_embs = model.get_possible_sense_embs(chunk[:, 2*args.window+1].tolist(), cuda=False)
-            zero = np.zeros((chunk.shape[0], args.size),'float32')
-
-            sense_embs = data_producer.create_n_update_sense(chunk[:, 2*args.window+1], context_feats, sense2idx,
-                             np.concatenate((sense_embs,zero),0), model.word2sense, counter_list, chunk.shape[0],
-                             sense_embs.shape[0], args.size, args.window, args.delta, model.n_senses)
+            #sense2idx, sense_embs = model.get_possible_sense_embs(chunk[:, 2*args.window+1].tolist(), cuda=False)
+            #zero = np.zeros((chunk.shape[0], args.size),'float32')
 
             # update sense_embs
-            for s_id in sense2idx:
-                idx = sense2idx[s_id]
-                #new_sense_emb = torch.FloatTensor(sense_embs[idx, :])
-                #model.sense_embs.weight.data[s_id, :] = new_sense_emb
-                model.sense_embs.weight.data[s_id, :] = torch.FloatTensor(sense_embs[idx, :])
-
-                if s_id >= model.n_senses:
-                    model.n_senses += 1
+            create_cnt = data_producer.create_n_update_sense(chunk[:, 2*args.window+1], context_feats, sense_embs, model.word2sense, counter_list, chunk.shape[0], args.size, args.delta, model.n_senses)
+            model.n_senses += create_cnt
 
             if model.n_senses + args.batch_size > model.sense_capacity:
                 new_capacity = model.sense_capacity * 3 // 2
-                #counter_list += [ 1.0 for _ in range(new_capacity - model.sense_capacity)]
                 counter_list = np.concatenate( (counter_list, np.ones((new_capacity - model.sense_capacity),dtype='float32')), axis=0)
-                new_embs = nn.Embedding(new_capacity, args.size, sparse=True)
-                new_embs.weight.data[:model.n_senses, :] = model.sense_embs.weight.data[:model.n_senses, :]
-                model.sense_embs = new_embs
+                zero = np.zeros((new_capacity - model.sense_capacity, args.size), 'float32')
+                sense_embs = np.concatenate((sense_embs, zero), 0)
                 model.sense_capacity = new_capacity
                 print("\nexapnded sense_embs: %d" % model.n_senses)
     t.join()
-    
+
+    sense_embs = sense_embs / counter_list[:,None]
+    sense_embs = sense_embs[:model.n_senses]
     # resize sense_embs
-    new_embs = nn.Embedding(model.n_senses, args.size, sparse=True)
-    for idx in range(model.n_senses):
-        new_embs.weight.data[idx, :] = model.sense_embs.weight.data[idx, :] / counter_list[idx]
-    model.sense_embs = new_embs
-    print(counter_list.max(), counter_list.min())
+    model.sense_embs = nn.Embedding(model.n_senses, args.size, sparse=True)
+    model.sense_embs.weight.data = torch.from_numpy(sense_embs)
+    print(counter_list.max(), counter_list.mean(), counter_list.min())
 
 
 if __name__ == '__main__':

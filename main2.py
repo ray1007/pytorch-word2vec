@@ -86,7 +86,7 @@ def build_vocab(args):
 
 
     #return word2idx, word_list, freq
-    return vocab_map, idx_count
+    return vocab_map, word_list, idx_count
 
 class CBOWMean(torch.autograd.Function):
     @staticmethod
@@ -118,8 +118,8 @@ class CBOW(nn.Module):
         n_embs = self.emb1_lookup(neg_inds)
 
         #c_embs = CBOWMean.apply(c_embs, ctx_lens)
-        #c_embs = torch.mean(c_embs, 1, keepdim=True)
-        c_embs = torch.sum(c_embs, 1, keepdim=True)
+        c_embs = torch.mean(c_embs, 1, keepdim=True)
+        #c_embs = torch.sum(c_embs, 1, keepdim=True)
 
         pos_ips = torch.sum(c_embs[:,0,:] * w_embs, 1)
         neg_ips = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
@@ -302,7 +302,7 @@ def train_process(p_id, data_queue, args, model):
                 word_idx = Variable(batch[0].cuda())
                 ctx_inds = Variable(batch[1].cuda())
                 neg_inds = Variable(batch[2].cuda())
-                
+
                 optimizer.zero_grad()
                 loss = model(word_idx, ctx_inds, neg_inds)
                 loss.backward()
@@ -325,13 +325,13 @@ if __name__ == '__main__':
     vars(args)['file_size'] = train_file.tell()
 
     #word2idx, word_list, freq = build_vocab(args)
-    vocab_map, idx_count = build_vocab(args)
+    vocab_map, word_list, idx_count = build_vocab(args)
 
     model = init_net(args)
     model.share_memory()
     if args.cuda:
         model.cuda()
-    #optimizer = optim.SGD(model.parameters(), lr=args.lr)
+    optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
     dataset = dataloader.SentenceDataset(
         args.train,
@@ -344,12 +344,14 @@ if __name__ == '__main__':
                                    num_workers=0)
 
     #vars(args)['t_start'] = time.monotonic()
+    '''
     data_queue = mp.SimpleQueue()
     processes = []
     for p_id in range(args.processes):
         p = mp.Process(target=train_process, args=(p_id, data_queue, args, model))
         p.start()
         processes.append(p)
+    '''
 
     st = time.monotonic()
     prev_cnt = 0
@@ -359,17 +361,35 @@ if __name__ == '__main__':
             cnt += len(batch[0])
             if cnt - prev_cnt > 10000:
                 delta = time.monotonic() - st
-                print('\rtotal words: {0}, time spent: {1:.6f}, speed: {2:.6f}'.format(cnt, delta, cnt / delta), end='')
+                print('\rtotal words: {0}, time spent: {1:.6f}, speed: {2:.6f}'.format(cnt, delta, cnt / delta) ,end='')
                 prev_cnt = cnt
-            
-            data_queue.put(batch)
+
+            #data_queue.put(batch)
             #pdb.set_trace()
 
+            if args.cbow == 1:
+                word_idx = Variable(batch[0], requires_grad=False)
+                ctx_inds = Variable(batch[1], requires_grad=False)
+                neg_inds = Variable(batch[2], requires_grad=False)
+
+                optimizer.zero_grad()
+                loss = model(word_idx, ctx_inds, neg_inds)
+                loss.backward()
+                optimizer.step()
+                model.emb0_lookup.weight.data[args.vocab_size].fill_(0)
+            elif args.cbow == 0:
+                optimizer.zero_grad()
+                loss = model(batch)
+                loss.backward()
+                optimizer.step()
+
+    '''
     for _ in range(args.processes):
         data_queue.put(None)
 
     for p in processes:
         p.join()
+    '''
 
     # output vectors
     if args.cuda:
