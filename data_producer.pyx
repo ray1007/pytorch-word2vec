@@ -235,10 +235,17 @@ def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, float[:,:]
         max_sense_id = -1
         max_sim = delta 
         for s_id in word2sense[t_id]:
+            if counter_list[s_id] == 0.0:
+                max_sense_id = s_id
+                break
             sim = cosine(emb_dim, &context_feats[b,0], &sense_embs[s_id,0])
             if sim > max_sim:
                 max_sim = sim
                 max_sense_id = s_id
+        
+        if counter_list[max_sense_id] != 0.0 and len(word2sense[t_id]) < 5:
+            if max_sim < delta:
+                max_sense_id = -1
 
         if max_sense_id == -1:
             new_sense_id = current_n_sense + create_count
@@ -314,7 +321,7 @@ def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx,
     return sense_embs[:n_sense_emb+create_count,:]
 '''
 
-def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:] sense_embs, word2sense, int chunk_size, int emb_dim, int window, int negative):
+def select_sense(long[:,:] chunk, float[:,:] context_feats, float[:,:] cluster_embs, word2sense, int chunk_size, int emb_dim, int window, int negative):
     cdef int b, d, pos, t_id, s_id
     cdef int max_sense_id
     cdef float sim, max_sim
@@ -326,7 +333,8 @@ def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:
             max_sense_id = -1
             max_sim = -10.0
             for s_id in word2sense[t_id]:
-                sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
+                sim = cosine(emb_dim, &context_feats[b,0], &cluster_embs[s_id,0])
+                #sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
                 if sim > max_sim:
                     max_sim = sim
                     max_sense_id = s_id

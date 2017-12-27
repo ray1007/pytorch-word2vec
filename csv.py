@@ -83,20 +83,21 @@ class CSV(nn.Module):
     def __init__(self, args):
         super(CSV, self).__init__()
         self.global_embs = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
-        self.sense_embs = nn.Embedding(args.vocab_size*2, args.size, sparse=True)
+        self.cluster_embs = nn.Embedding(args.vocab_size*5, args.size, sparse=True)
+        self.sense_embs = nn.Embedding(args.vocab_size*5, args.size, sparse=True)
         self.word2sense = [ [i] for i in range(args.vocab_size) ]
         self.ctx_weight = torch.nn.Parameter(torch.ones(2*args.window, args.size) / args.window)
 
         self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
+        self.cluster_embs.weight.data.zero_()
         self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
 
         self.n_senses = args.vocab_size
-        self.sense_capacity = args.vocab_size*2
         self.batch_size = args.batch_size
         self.size = args.size
         self.window = args.window
         self.negative = args.negative
-        self.pad_idx = args.vocab_size
+        self.vocab_size = args.vocab_size
 
     def get_context_feats(self, ctx_type_indices):
         ctx_type_embs = self.global_embs(ctx_type_indices)
@@ -295,6 +296,9 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
 
+    if args.stage == 3:
+        cluster_embs = model.cluster_embs.weight.data.numpy()
+
     #n_iter = 1 if args.stage == 2 else args.iter
     n_iter = args.iter
     # get from data_queue and feed to model
@@ -335,16 +339,16 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
                 else:
                     data = Variable(torch.LongTensor(chunk), requires_grad=False)
 
-                #type_ids = chunk[:, 2*args.window+1:2*args.window+2+2*args.negative]
-                type_ids = chunk[:, 2*args.window+1:2*args.window+2+args.negative]
-                type_ids = np.reshape(type_ids, (type_ids.shape[0] * type_ids.shape[1]))
-                sense2idx, sense_embs = model.get_possible_sense_embs(type_ids.tolist())
+                #type_ids = chunk[:, 2*args.window+1:2*args.window+2+args.negative]
+                #type_ids = np.reshape(type_ids, (type_ids.shape[0] * type_ids.shape[1]))
+                #sense2idx, sense_embs = model.get_possible_sense_embs(type_ids.tolist())
 
                 # get type_idx from chunk, and do sense selection here.
                 context_feats = model.get_context_feats(data[:, :2*args.window])
                 context_feats = context_feats.cpu().data.numpy()
 
-                chunk = data_producer.select_sense(chunk, context_feats, sense2idx, sense_embs,
+
+                chunk = data_producer.select_sense(chunk, context_feats, cluster_embs,
                             model.word2sense, chunk.shape[0], args.size, args.window, args.negative)
 
                 if args.cuda:
@@ -362,8 +366,9 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, args, model):
     data_queue = mp.SimpleQueue()
 
-    sense_embs = model.sense_embs.weight.data.numpy()
-    counter_list = np.zeros((model.sense_capacity), dtype='float32')
+    cluster_embs = model.cluster_embs.weight.data.numpy()
+    #sense_embs = model.sense_embs.weight.data.numpy()
+    counter_list = np.zeros((model.vocab_size * 5,), dtype='float32')
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
@@ -388,28 +393,18 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
 
             context_feats = model.get_context_feats(data[:, :2*args.window])
             context_feats = context_feats.cpu().data.numpy()
-            #sense2idx, sense_embs = model.get_possible_sense_embs(chunk[:, 2*args.window+1].tolist(), cuda=False)
-            #zero = np.zeros((chunk.shape[0], args.size),'float32')
 
-            # update sense_embs
-            create_cnt = data_producer.create_n_update_sense(chunk[:, 2*args.window+1], context_feats, sense_embs, model.word2sense, counter_list, chunk.shape[0], args.size, args.delta, model.n_senses)
+            # update cluster_embs
+            create_cnt = data_producer.create_n_update_sense(chunk[:, 2*args.window+1], context_feats,
+                    cluster_embs, model.word2sense, counter_list, len(chunk),
+                    args.size, args.delta, model.n_senses)
             model.n_senses += create_cnt
 
-            if model.n_senses + args.batch_size > model.sense_capacity:
-                new_capacity = model.sense_capacity * 3 // 2
-                counter_list = np.concatenate( (counter_list, np.ones((new_capacity - model.sense_capacity),dtype='float32')), axis=0)
-                zero = np.zeros((new_capacity - model.sense_capacity, args.size), 'float32')
-                sense_embs = np.concatenate((sense_embs, zero), 0)
-                model.sense_capacity = new_capacity
-                print("\nexapnded sense_embs: %d" % model.n_senses)
     t.join()
 
-    sense_embs = sense_embs / counter_list[:,None]
-    sense_embs = sense_embs[:model.n_senses]
-    # resize sense_embs
-    model.sense_embs = nn.Embedding(model.n_senses, args.size, sparse=True)
-    model.sense_embs.weight.data = torch.from_numpy(sense_embs)
-    print(counter_list.max(), counter_list.mean(), counter_list.min())
+    cluster_embs = cluster_embs[:model.n_senses] / counter_list[:model.n_senses, None]
+    model.cluster_embs = nn.Embedding(model.n_senses, args.size, sparse=True)
+    model.cluster_embs.weight.data = torch.from_numpy(cluster_embs)
 
 
 if __name__ == '__main__':
@@ -455,7 +450,7 @@ if __name__ == '__main__':
         old_batch_size = vars(args)['batch_size']
         model.global_embs.requires_grad = False
         model.ctx_weight.requires_grad = False
-        model.sense_embs = model.sense_embs.cpu()
+        model.cluster_embs = model.cluster_embs.cpu()
         vars(args)['stage'] = 2
         vars(args)['batch_size'] = 5000
         print("\nStage 2")
@@ -463,8 +458,8 @@ if __name__ == '__main__':
         vars(args)['t_start'] = time.monotonic()
         train_process_stage2(0, word_count_actual, word2idx, word_list, freq, args, model)
 
-        if args.cuda:
-            model.cuda()
+        #if args.cuda:
+        #    model.cuda()
         print("\nStage 2, ", time.monotonic() - args.t_start, " secs")
         print("Current # of senses: %d" % model.n_senses)
         filename = args.save
