@@ -95,9 +95,9 @@ class CBOWLoaderIter:
         if remaining is not None:
             self.queue.append(remaining)
 
-        word_idx = np2tor(sent).long().cuda()
-        ctx_idxs = np2tor(ctx).long().cuda()
-        neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES)).long().cuda()
+        word_idx = np2tor(sent).long()
+        ctx_idxs = np2tor(ctx).long()
+        neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES)).long()
         return (word_idx, ctx_idxs, neg_idxs)
 
 
