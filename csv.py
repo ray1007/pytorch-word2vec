@@ -85,7 +85,7 @@ class CSV(nn.Module):
         self.global_embs = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
         self.sense_embs = nn.Embedding(args.vocab_size*2, args.size, sparse=True)
         self.word2sense = [ [i] for i in range(args.vocab_size) ]
-        self.ctx_weight = torch.nn.Parameter(torch.ones(2*args.window, args.size))
+        self.ctx_weight = torch.nn.Parameter(torch.ones(2*args.window, args.size) / 2 / args.window)
 
         self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
