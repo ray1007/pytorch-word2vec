@@ -16,6 +16,7 @@ from torch import optim
 import torch.nn.functional as F
 import torch.multiprocessing as mp
 
+import data_producer
 import dataloader
 from utils import LookupTable
 
@@ -71,6 +72,7 @@ def build_vocab(args):
     vocab_map = LookupTable()
     idx_count = np.zeros((len(word_list),))
     for i,w in enumerate(word_list):
+        vocab_map[w] = i
         word2idx[w] = i
         idx_count[i] = freq[w]
 
@@ -110,25 +112,22 @@ class CBOW(nn.Module):
         self.negative = args.negative
         self.pad_idx = args.vocab_size
 
-    def forward(self, data):
-        ctx_indices = data[:, 0:2*self.window]
-        ctx_lens = data[:, 2*self.window].float()
-        word_idx = data[:, 2*self.window+1]
-        neg_indices = data[:, 2*self.window+2:2*self.window+2+self.negative]
-        neg_mask = data[:, 2*self.window+2+self.negative:].float()
-
-        c_embs = self.emb0_lookup(ctx_indices)
+    def forward(self, word_idx, ctx_inds, neg_inds):
         w_embs = self.emb1_lookup(word_idx)
-        n_embs = self.emb1_lookup(neg_indices)
+        c_embs = self.emb0_lookup(ctx_inds)
+        n_embs = self.emb1_lookup(neg_inds)
 
-        c_embs = CBOWMean.apply(c_embs, ctx_lens)
+        #c_embs = CBOWMean.apply(c_embs, ctx_lens)
+        #c_embs = torch.mean(c_embs, 1, keepdim=True)
+        c_embs = torch.sum(c_embs, 1, keepdim=True)
 
         pos_ips = torch.sum(c_embs[:,0,:] * w_embs, 1)
         neg_ips = torch.bmm(n_embs, c_embs.permute(0,2,1))[:,:,0]
 
         # Neg Log Likelihood
         pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)) )
-        neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
+        neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) )
+        #neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
 
         return pos_loss + neg_loss
 
@@ -290,54 +289,34 @@ def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, w
         data_queue.put(batch_placeholder[:batch_count,:])
     data_queue.put(None)
 
-def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
-    data_queue = mp.SimpleQueue()
-
+def train_process(p_id, data_queue, args, model):
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
-    t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word2idx, word_list, freq, args))
-    t.start()
-
     # get from data_queue and feed to model
-    prev_word_cnt = 0
     while True:
-        d = data_queue.get()
-        if d is None:
+        batch = data_queue.get()
+        if batch is None:
             break
         else:
-            # lr anneal & output
-            if word_count_actual.value - prev_word_cnt > 10000:
-                lr = args.lr * (1 - word_count_actual.value / (args.iter * args.train_words))
-                if lr < 0.0001 * args.lr:
-                    lr = 0.0001 * args.lr
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = lr
-
-                sys.stdout.write("\rAlpha: %0.8f, Progess: %0.2f, Words/sec: %f" % (lr, word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start)))
-                sys.stdout.flush()
-                prev_word_cnt = word_count_actual.value
-
-            if args.cuda:
-                data = Variable(torch.LongTensor(d).cuda(), requires_grad=False)
-            else:
-                data = Variable(torch.LongTensor(d), requires_grad=False)
-
             if args.cbow == 1:
+                word_idx = Variable(batch[0].cuda())
+                ctx_inds = Variable(batch[1].cuda())
+                neg_inds = Variable(batch[2].cuda())
+                
                 optimizer.zero_grad()
-                loss = model(data)
+                loss = model(word_idx, ctx_inds, neg_inds)
                 loss.backward()
                 optimizer.step()
                 model.emb0_lookup.weight.data[args.vocab_size].fill_(0)
             elif args.cbow == 0:
                 optimizer.zero_grad()
-                loss = model(data)
+                loss = model(batch)
                 loss.backward()
                 optimizer.step()
 
-    t.join()
 
 if __name__ == '__main__':
-    #set_start_method('forkserver')
+    set_start_method('forkserver')
 
     args = parser.parse_args()
     print("Starting training using file %s" % args.train)
@@ -349,8 +328,10 @@ if __name__ == '__main__':
     vocab_map, idx_count = build_vocab(args)
 
     model = init_net(args)
+    model.share_memory()
     if args.cuda:
         model.cuda()
+    #optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
     dataset = dataloader.SentenceDataset(
         args.train,
@@ -362,28 +343,34 @@ if __name__ == '__main__':
                                    batch_size=args.batch_size,
                                    num_workers=0)
 
-    vars(args)['t_start'] = time.monotonic()
+    #vars(args)['t_start'] = time.monotonic()
+    data_queue = mp.SimpleQueue()
+    processes = []
+    for p_id in range(args.processes):
+        p = mp.Process(target=train_process, args=(p_id, data_queue, args, model))
+        p.start()
+        processes.append(p)
+
+    st = time.monotonic()
     prev_cnt = 0
     cnt = 0
     for it in range(args.iter):
         for batch in loader:
             cnt += len(batch[0])
-            pdb.set_trace()
             if cnt - prev_cnt > 10000:
                 delta = time.monotonic() - st
-                print('\rtotal words: {0}, time spent: {1:.6f}, speed: {0:.6f}'.format(cnt, delta, cnt / delta), end='')
+                print('\rtotal words: {0}, time spent: {1:.6f}, speed: {2:.6f}'.format(cnt, delta, cnt / delta), end='')
                 prev_cnt = cnt
+            
+            data_queue.put(batch)
+            #pdb.set_trace()
 
-    '''
-    processes = []
-    for p_id in range(args.processes):
-        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model))
-        p.start()
-        processes.append(p)
+    for _ in range(args.processes):
+        data_queue.put(None)
 
     for p in processes:
         p.join()
-    '''
+
     # output vectors
     if args.cuda:
         embs = model.emb0_lookup.weight.data.cpu().numpy()
