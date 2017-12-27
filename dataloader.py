@@ -55,6 +55,13 @@ class CBOWLoaderIter:
         # following is correct but not easy to understand
         wds = sliding_window(pad_word_idx, size)
         ctx = np.concatenate((wds[:-(size+1)], wds[(size+1):]), axis=1)
+
+        # dynamic window size
+        for word_ctx in ctx:
+            dyn_padding = np.random.randint(self.window_size + 1)
+            word_ctx[:dyn_padding] = self.padding_index
+            word_ctx[-dyn_padding:] = self.padding_index
+
         return ctx
 
     def __iter__(self):
@@ -97,8 +104,9 @@ class CBOWLoaderIter:
 
         word_idx = np2tor(sent).long()
         ctx_idxs = np2tor(ctx).long()
+        ctx_len = (ctx == self.padding_index).sum(1)
         neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES)).long()
-        return (word_idx, ctx_idxs, neg_idxs)
+        return (word_idx, ctx_idxs, ctx_len, neg_idxs)
 
 
 class CBOWLoader:
