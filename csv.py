@@ -85,7 +85,7 @@ class CSV(nn.Module):
         self.global_embs = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
         self.sense_embs = nn.Embedding(args.vocab_size*2, args.size, sparse=True)
         self.word2sense = [ [i] for i in range(args.vocab_size) ]
-        self.ctx_weight = torch.nn.Parameter(torch.ones(2*args.window, args.size) / 2 / args.window)
+        self.ctx_weight = torch.nn.Parameter(torch.ones(2*args.window, args.size) / args.window)
 
         self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
         self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
@@ -363,7 +363,7 @@ def train_process_stage2(p_id, word_count_actual, word2idx, word_list, freq, arg
     data_queue = mp.SimpleQueue()
 
     sense_embs = model.sense_embs.weight.data.numpy()
-    counter_list = np.ones((model.sense_capacity), dtype='float32')
+    counter_list = np.zeros((model.sense_capacity), dtype='float32')
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
