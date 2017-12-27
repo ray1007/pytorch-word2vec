@@ -3,7 +3,7 @@ cimport numpy as np
 import cython
 from libc.stdio cimport FILE, fopen, fwrite, fscanf, fclose, fprintf, fseek, ftell, SEEK_END, rewind, fread
 from libc.stdlib cimport malloc, free, rand, RAND_MAX
-from libc.math cimport pow
+from libc.math cimport pow, sqrt
 from libc.stdint cimport uintptr_t
 
 try:
@@ -30,6 +30,18 @@ def dot(int size, float[:] x, float[:] y):
 #cdef cos_sim(int size, float[:] x, float[:] y):
 #    cdef int ONE = 1
 #    return sdot(&size, &x[0], &ONE, &y[0], &ONE) / snrm2(&size, &x[0], &ONE) / snrm2(&size, &y[0], &ONE)
+
+cdef float cosine(const int size, const float* x, const float* y):
+    cdef int d
+    cdef float sim, n1, n2
+    sim = 0.0
+    n1 = 0.0
+    n2 = 0.0
+    for d in range(size):
+        sim += x[d] * y[d]
+        n1 += x[d] * x[d]
+        n2 += y[d] * y[d]
+    return sim / sqrt(n1) / sqrt(n2)
 
 cdef float cos_sim(const int size, const float* x, const float* y):
     cdef int ONE = 1
@@ -229,11 +241,13 @@ def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx,
             n1 = 0.0
             n2 = 0.0
             idx = sense2idx[s_id]
-            for d in range(emb_dim):
-                sim += context_feats[b,d] * sense_embs[idx,d]
-                n1 += context_feats[b,d] * context_feats[b,d]
-                n2 += sense_embs[idx,d] * sense_embs[idx,d]
-            sim = sim / n1 / n2
+            sim = cosine(emb_dim, &context_feats[b,0], &sense_embs[idx,0])
+            #for d in range(emb_dim):
+            #    sim += context_feats[b,d] * sense_embs[idx,d] / counter_list[s_id]
+            #    n1 += context_feats[b,d] * context_feats[b,d]
+            #    n2 += sense_embs[idx,d] / counter_list[s_id] * sense_embs[idx,d] / counter_list[s_id]
+            #sim = sim / sqrt(n1) / sqrt(n2)
+
             #sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
             if sim > max_sim:
                 max_sim = sim
