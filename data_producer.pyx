@@ -223,6 +223,9 @@ def write_embs(str fn, word_list, float[:,:] embs, int vocab_size, int dim):
             for j in range(dim):
                 out_f.write( '%.6f ' % embs[i, j] )
             out_f.write('\n')
+
+# limited max # of sense
+#def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, float[:,:] sense_embs, int[:,:] word2sense, int[:] word_sense_cnt, float[:] counter_list, int type_ids_len, int emb_dim, float delta, int current_n_sense):
         
 def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, float[:,:] sense_embs, word2sense, float[:] counter_list, int type_ids_len, int emb_dim, float delta, int current_n_sense):
     cdef int b, d, pos, t_id, s_id
@@ -232,26 +235,31 @@ def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, float[:,:]
     create_count = 0
     for b in range(type_ids_len):
         t_id = type_ids[b]
+        # first encounter
+        if counter_list[t_id] == 0.0:
+            for d in range(emb_dim): 
+                sense_embs[t_id, d] = context_feats[b, d]
+            counter_list[t_id] += 1.0
+            continue
+            
+        # not first encounter
         max_sense_id = -1
-        max_sim = delta 
+        max_sim = -10.0 
         for s_id in word2sense[t_id]:
             sim = cosine(emb_dim, &context_feats[b,0], &sense_embs[s_id,0])
             if sim > max_sim:
                 max_sim = sim
                 max_sense_id = s_id
 
-        if max_sense_id == -1:
-            new_sense_id = current_n_sense + create_count
-            word2sense[t_id].append(new_sense_id)
-            sense_embs[new_sense_id, :] = context_feats[b, :]
-            create_count += 1
+        if len(word2sense[t_id]) < 5:
+            if max_sim < delta:
+                max_sense_id = current_n_sense + create_count
+                word2sense[t_id].append(max_sense_id)
+                create_count += 1
 
-            counter_list[ new_sense_id ] = 1.0
-        else:
-            for d in range(emb_dim):
-                sense_embs[max_sense_id,d] += context_feats[b,d]
-
-            counter_list[ max_sense_id ] += 1.0
+        for d in range(emb_dim):
+            sense_embs[max_sense_id,d] += context_feats[b,d]
+        counter_list[ max_sense_id ] += 1.0
 
     return create_count
 
@@ -318,20 +326,22 @@ def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:
     cdef int b, d, pos, t_id, s_id
     cdef int max_sense_id
     cdef float sim, max_sim
-    #cdef long[:,:] data = np.zeros([chunk_size, 2*window+2+2*negative], dtype=np.int64)
 
     for b in range(chunk_size):
-        for pos in range(2*window+1, 2*window+2+negative):
-            t_id = chunk[b, pos]
-            max_sense_id = -1
-            max_sim = -10.0
-            for s_id in word2sense[t_id]:
-                sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
-                if sim > max_sim:
-                    max_sim = sim
-                    max_sense_id = s_id
+        pos = 2*window+1
+        t_id = chunk[b, pos]
+        max_sense_id = -1
+        max_sim = -10.0
+        for s_id in word2sense[t_id]:
+            sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
+            if sim > max_sim:
+                max_sim = sim
+                max_sense_id = s_id
+        chunk[b, pos] = max_sense_id
 
-            chunk[b, pos] = max_sense_id
+        for pos in range(2*window+2, 2*window+2+negative):
+            t_id = chunk[b, pos]
+            chunk[b, pos] = word2sense[t_id][ rand() % len(word2sense[t_id]) ]
 
     return chunk
 
