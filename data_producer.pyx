@@ -263,65 +263,6 @@ def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, float[:,:]
 
     return create_count
 
-'''
-def create_n_update_sense(long[:] type_ids, float[:,:] context_feats, sense2idx, float[:,:] sense_embs, word2sense, float[:] counter_list, int type_ids_len, int n_sense_emb, int emb_dim, int window, float delta, int current_n_sense):
-    cdef int b, d, pos, t_id, s_id, idx
-    cdef int max_sense_id, new_sense_id, create_count
-    cdef float sim, max_sim, n1, n2
-    cdef float[:] new_sense_emb = np.zeros([emb_dim], dtype=np.float32)
-
-    create_count = 0
-    for b in range(type_ids_len):
-        t_id = type_ids[b]
-        max_sense_id = -1
-        max_sim = delta 
-        for s_id in word2sense[t_id]:
-            sim = 0.0 
-            n1 = 0.0
-            n2 = 0.0
-            idx = sense2idx[s_id]
-            sim = cosine(emb_dim, &context_feats[b,0], &sense_embs[idx,0])
-            #for d in range(emb_dim):
-            #    sim += context_feats[b,d] * sense_embs[idx,d] / counter_list[s_id]
-            #    n1 += context_feats[b,d] * context_feats[b,d]
-            #    n2 += sense_embs[idx,d] / counter_list[s_id] * sense_embs[idx,d] / counter_list[s_id]
-            #sim = sim / sqrt(n1) / sqrt(n2)
-
-            #sim = cos_sim(emb_dim, &context_feats[b,0], &sense_embs[sense2idx[s_id],0])
-            if sim > max_sim:
-                max_sim = sim
-                max_sense_id = s_id
-
-        if max_sense_id == -1:
-            new_sense_id = current_n_sense + create_count
-            word2sense[t_id].append(new_sense_id)
-            sense2idx[new_sense_id] = n_sense_emb + create_count
-            sense_embs[n_sense_emb+create_count, :] = context_feats[b, :]
-            create_count += 1
-
-            counter_list[ new_sense_id ] = 1.0
-        else:
-            idx = sense2idx[max_sense_id]
-            for d in range(emb_dim):
-                sense_embs[idx,d] += context_feats[b,d]
-                #new_sense_emb[d] = sense_embs[ sense2idx[max_sense_id], d] * counter_list[max_sense_id] / (counter_list[max_sense_id]+1) + context_feats[b,d] / (counter_list[max_sense_id]+1)
-                #new_sense_emb[d] = sense_embs[ sense2idx[max_sense_id], d] * counter_list[max_sense_id] + context_feats[b,d]
-
-            counter_list[ max_sense_id ] += 1.0
-            # see if BLAS speeds up the code.
-            for d in range(emb_dim):
-                new_sense_emb[d] = 0.0
-            my_saxpy(emb_dim, counter_list[max_sense_id], &sense_embs[ sense2idx[max_sense_id],0], &context_feats[b,0])
-            
-            counter_list[ max_sense_id ] += 1.0
-            my_saxpy(emb_dim, 1/counter_list[max_sense_id], &context_feats[b,0], &new_sense_emb[0])
-
-            #sense_embs[ sense2idx[max_sense_id], :] = new_sense_emb[:]
-
-
-    return sense_embs[:n_sense_emb+create_count,:]
-'''
-
 def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:] sense_embs, word2sense, int chunk_size, int emb_dim, int window, int negative):
     cdef int b, d, pos, t_id, s_id
     cdef int max_sense_id
@@ -344,4 +285,119 @@ def select_sense(long[:,:] chunk, float[:,:] context_feats, sense2idx, float[:,:
             chunk[b, pos] = word2sense[t_id][ rand() % len(word2sense[t_id]) ]
 
     return chunk
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+def npmssg_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int negative, int vocab_size, int batch_size, unsigned long long next_random):
+    cdef int i,j,tar_id,pos,t,n,q,r
+    cdef int ctx_count, neg_count, actual_window
+    cdef unsigned long long modulo = 281474976710655ULL
+    
+    # columns of data and its length:  
+    #   ctx_indices:  [2 * window]
+    #   ctx_mask:     [2 * window]
+    #   word_idx:     [1]
+    #   neg_indices:  [negative]
+    #   neg_mask:     [negative]
+    cdef long[:,:] data = np.zeros([sent_id_len,4*window+1+2*negative], dtype=np.int64)
+
+    cdef int* unigram_table
+    unigram_table = <int*>ptr_val
+
+    for i in range(sent_id_len):
+        ctx_count = 0
+        actual_window = rand() % window + 1
+        tar_id = sent_id[i]
+        for j in range(i-window, i-actual_window):
+            pos = j - (i-window)
+            data[i, pos] = vocab_size
+        for j in range(i-actual_window, i):
+            pos = j - (i-window)
+            if j < 0 or j >= sent_id_len:
+                data[i, pos] = vocab_size
+            else:
+                data[i, pos] = sent_id[j]
+                data[i, pos + 2*window] = 1
+                ctx_count += 1
+        for j in range(i+1, i+1+actual_window):
+            pos = j - (i-window) - 1
+            if j < 0 or j >= sent_id_len:
+                data[i, pos] = vocab_size
+            else:
+                data[i, pos] = sent_id[j]
+                data[i, pos + 2*window] = 1
+                ctx_count += 1
+        for j in range(i+1+actual_window, i+1+window):
+            pos = j - (i-window) - 1
+            data[i, pos] = vocab_size
+
+        data[i, 4*window] = tar_id
+
+        # negative sampling
+        neg_count = 0
+        for n in range(negative):
+            t = get_unigram_table_at_idx(unigram_table, next_random)
+            next_random = (next_random * <unsigned long long>25214903917ULL + 11) & modulo
+            if t == tar_id:
+                continue
+
+            data[i, 4*window+1+neg_count] = t
+            neg_count += 1
+
+        # neg mask
+        for n in range(neg_count):
+            data[i, 4*window+1+negative+n] = 1
+
+    return np.asarray(data)
+
+def npmssg_select_sense(long[:] word_ids, float[:,:] context_feats, float[:,:] cluster_embs, 
+        int[:,:] word2sense, int[:] word_sense_cnts, float[:] counter_list, int word_ids_len, 
+        int emb_dim, int max_senses, float delta, int current_n_senses):
+    cdef int b, d, pos, w_id, s_id
+    cdef int max_sense_id, new_sense_id, create_count
+    cdef float sim, max_sim
+    cdef float[:] cluster_emb = np.zeros([emb_dim], dtype=np.float32)
+    cdef long[:] senses = np.zeros([word_ids_len], dtype=np.int64)
+
+    create_count = 0
+    for b in range(word_ids_len):
+        w_id = word_ids[b]
+        
+        # first encounter
+        if counter_list[w_id] == 0.0:
+            senses[b] = w_id
+            for d in range(emb_dim):
+                cluster_embs[w_id, d] += context_feats[b, d]
+            counter_list[w_id] += 1.0
+            continue
+
+        # not first encounter
+        max_sense_id = -1
+        max_sim = -10.0
+        for s_id in range(word_sense_cnts[w_id]):
+            s_id = word2sense[w_id][s_id]
+            if counter_list[s_id] == 0:
+                print("zero:", s_id)
+            for d in range(emb_dim):
+                cluster_emb[d] = cluster_embs[s_id, d] / counter_list[s_id]
+            sim = cosine(emb_dim, &context_feats[b,0], &cluster_emb[0])
+            if sim > max_sim:
+                max_sim = sim
+                max_sense_id = s_id
+
+        # create new sense
+        if word_sense_cnts[w_id] < max_senses:
+            if max_sim < delta:
+                max_sense_id = current_n_senses + create_count
+                word2sense[w_id][ word_sense_cnts[w_id] ] = max_sense_id
+                word_sense_cnts[w_id] += 1
+                create_count += 1
+
+        senses[b] = max_sense_id
+        for d in range(emb_dim):
+            cluster_embs[max_sense_id, d] += context_feats[b, d]
+        counter_list[max_sense_id] += 1.0
+
+    return senses, create_count
 
