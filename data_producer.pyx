@@ -352,7 +352,9 @@ def npmssg_producer(sent_id, int sent_id_len, uintptr_t ptr_val, int window, int
 
     return np.asarray(data)
 
-def npmssg_select_sense(long[:] word_ids, float[:,:] context_feats, double[:,:] cluster_embs, word2sense, float[:] counter_list, int word_ids_len, int emb_dim, float delta, int current_n_senses):
+def npmssg_select_sense(long[:] word_ids, float[:,:] context_feats, float[:,:] cluster_embs, 
+        int[:,:] word2sense, int[:] word_sense_cnts, float[:] counter_list, int word_ids_len, 
+        int emb_dim, int max_senses, float delta, int current_n_senses):
     cdef int b, d, pos, w_id, s_id
     cdef int max_sense_id, new_sense_id, create_count
     cdef float sim, max_sim
@@ -374,7 +376,10 @@ def npmssg_select_sense(long[:] word_ids, float[:,:] context_feats, double[:,:] 
         # not first encounter
         max_sense_id = -1
         max_sim = -10.0
-        for s_id in word2sense[w_id]:
+        for s_id in range(word_sense_cnts[w_id]):
+            s_id = word2sense[w_id][s_id]
+            if counter_list[s_id] == 0:
+                print("zero:", s_id)
             for d in range(emb_dim):
                 cluster_emb[d] = cluster_embs[s_id, d] / counter_list[s_id]
             sim = cosine(emb_dim, &context_feats[b,0], &cluster_emb[0])
@@ -383,16 +388,18 @@ def npmssg_select_sense(long[:] word_ids, float[:,:] context_feats, double[:,:] 
                 max_sense_id = s_id
 
         # create new sense
-        if len(word2sense[w_id]) < 5:
+        if word_sense_cnts[w_id] < max_senses:
             if max_sim < delta:
                 max_sense_id = current_n_senses + create_count
-                word2sense[w_id].append(max_sense_id)
+                word2sense[w_id][ word_sense_cnts[w_id] ] = max_sense_id
+                word_sense_cnts[w_id] += 1
+                create_count += 1
 
         senses[b] = max_sense_id
         for d in range(emb_dim):
             cluster_embs[max_sense_id, d] += context_feats[b, d]
         counter_list[max_sense_id] += 1.0
 
-    return senses
+    return senses, create_count
 
 
