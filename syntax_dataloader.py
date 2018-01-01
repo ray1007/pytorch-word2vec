@@ -89,8 +89,12 @@ class SentenceParsingDataset(Dataset):
 
 
 class SentenceParsedDataset:
-    def __init__(self, filepath):
-        self.sents = np.load(filepath)
+    def __init__(self, filelist):
+        if isinstance(filepath, str):
+            filelist = [filelist]
+        self.sents = []
+        for fn in filelist:
+            self.sents.extend(np.load(fn))
 
     def __getitem__(self, index):
         return self.sents[index]
