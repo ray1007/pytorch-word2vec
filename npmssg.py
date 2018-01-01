@@ -279,8 +279,7 @@ def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, mode
 
     lr = args.lr
     #optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
-    #optimizer = optim.Adagrad(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
-    optimizer = optim.SparseAdam(filter(lambda p: p.requires_grad, model.parameters()))
+    optimizer = optim.Adagrad(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
 
     t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
     t.start()
