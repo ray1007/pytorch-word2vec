@@ -15,12 +15,14 @@ class SentenceDataset(Dataset):
             vocab_map: LookupTable
         '''
         self.vocab_map = vocab_map
+        self.sents = []
         with open(filepath, 'r') as f:
-            tokens = line.strip().split()
-            self.sents = [
-                np.array([self.vocab_map[t] for t in tokens], dtype='i')
-                for line in f
-            ]
+            for line in f:
+                tokens = list(filter(
+                    lambda x: x is not None,
+                    (self.vocab_map.get(t, None) for t in line.strip().split())
+                ))
+                self.sents.append(np.array(tokens, dtype='i'))
 
     def __getitem__(self, index):
         return self.sents[index]
@@ -37,21 +39,13 @@ class CBOWLoaderIter:
         self.window_size = loader.window_size
         self.padding_index = loader.padding_index
 
-        neg_prob = sum_normalize(idx_count ** loader.neg_power)
+        neg_prob = sum_normalize(loader.idx_count ** loader.neg_power)
         self.neg_table = AliasTable(neg_prob)
         ratio = loader.sub_threshold / sum_normalize(loader.idx_count)
         self.sub_prob = np.sqrt(ratio) + ratio
 
         self.in_iter = iter(loader.in_loader)
         self.queue = []
-
-    def get_next_sent(self):
-        if self.loader.cached:
-            return next(self.cache_iter)
-        else:
-            sent = next(self.in_iter)[0]
-            self.loader.cache.append(sent)
-            return sent
 
     def gen_context(self, sent):
         size = self.window_size
@@ -61,6 +55,13 @@ class CBOWLoaderIter:
         # following is correct but not easy to understand
         wds = sliding_window(pad_word_idx, size)
         ctx = np.concatenate((wds[:-(size+1)], wds[(size+1):]), axis=1)
+
+        # dynamic window size
+        dyn_padding = np.random.randint(self.window_size + 1, size=len(sent))
+        for word_ctx, d in zip(ctx, dyn_padding):
+            word_ctx[:d] = self.padding_index
+            word_ctx[-d:] = self.padding_index
+
         return ctx
 
     def __iter__(self):
@@ -70,8 +71,7 @@ class CBOWLoaderIter:
         n_sample = sum(len(x) for x, y in self.queue)
         while n_sample < self.batch_size:
             try:
-                # get the next sentence, use cache if available
-                sent = self.get_next_sent()
+                sent = next(self.in_iter)[0]
             except StopIteration:
                 break
 
@@ -86,8 +86,6 @@ class CBOWLoaderIter:
             self.queue.append((sent, ctx))
 
         if n_sample == 0:
-            # end of iteration, set cached to True
-            self.loader.cached = True
             raise StopIteration
 
         bound = n_sample - self.batch_size
@@ -104,10 +102,12 @@ class CBOWLoaderIter:
         if remaining is not None:
             self.queue.append(remaining)
 
-        word_idx = np2tor(sent)
-        ctx_idxs = np2tor(ctx)
-        neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES))
-        return (word_idx, ctx_idxs, neg_idxs)
+        word_idx = np2tor(sent).long()
+        ctx_idxs = np2tor(ctx).long()
+        ctx_len  = np2tor((ctx == self.padding_index).sum(1)).float()
+        neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES)).long()
+        # neg_mask = (neg_idxs == word_idx.unsqueeze(-1)).float()
+        return (word_idx, ctx_idxs, ctx_len, neg_idxs)
 
 
 class CBOWLoader:
