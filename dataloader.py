@@ -104,7 +104,7 @@ class CBOWLoaderIter:
 
         word_idx = np2tor(sent).long()
         ctx_idxs = np2tor(ctx).long()
-        ctx_len = (ctx == self.padding_index).sum(1)
+        ctx_len  = np2tor((ctx == self.padding_index).sum(1)).float()
         neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES)).long()
         return (word_idx, ctx_idxs, ctx_len, neg_idxs)
 
