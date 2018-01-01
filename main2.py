@@ -112,13 +112,13 @@ class CBOW(nn.Module):
         self.negative = args.negative
         self.pad_idx = args.vocab_size
 
-    def forward(self, word_idx, ctx_inds, neg_inds):
+    def forward(self, word_idx, ctx_inds, ctx_lens, neg_inds):
         w_embs = self.emb1_lookup(word_idx)
         c_embs = self.emb0_lookup(ctx_inds)
         n_embs = self.emb1_lookup(neg_inds)
 
-        #c_embs = CBOWMean.apply(c_embs, ctx_lens)
-        c_embs = torch.mean(c_embs, 1, keepdim=True)
+        c_embs = CBOWMean.apply(c_embs, ctx_lens)
+        #c_embs = torch.mean(c_embs, 1, keepdim=True)
         #c_embs = torch.sum(c_embs, 1, keepdim=True)
 
         pos_ips = torch.sum(c_embs[:,0,:] * w_embs, 1)
@@ -174,137 +174,41 @@ def init_net(args):
         return SG(args)
 
 # Training
-def train_process_sent_producer(p_id, data_queue, word_count_actual, word2idx, word_list, freq, args):
-    if args.negative > 0:
-        table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
+def train_process(p_id, word_count_actual, vocab_map, idx_count, args, model):
+    dataset = dataloader.SentenceDataset(
+        "%s.%d" % (args.train, p_id),
+        vocab_map,
+    )
+    loader = dataloader.CBOWLoader(dataset, args.window, idx_count,
+                                   padding_index=len(idx_count),
+                                   sub_threshold=args.sample,
+                                   batch_size=args.batch_size,
+                                   num_workers=0)
 
-    train_file = open(args.train)
-    file_pos = args.file_size * p_id // args.processes
-    train_file.seek(file_pos, 0)
-    while True:
-        try:
-            train_file.read(1)
-        except UnicodeDecodeError:
-            file_pos -= 1
-            train_file.seek(file_pos, 0)
-        else:
-            train_file.seek(file_pos, 0)
-            break
-
-    batch_count = 0
-    if args.cbow == 1:
-        batch_placeholder = np.zeros((args.batch_size, 2*args.window+2+2*args.negative), 'int64')
-    else:
-        batch_placeholder = np.zeros((args.batch_size, 2+2*args.negative), 'int64')
-
-    for it in range(args.iter):
-        train_file.seek(file_pos, 0)
-
-        last_word_cnt = 0
-        word_cnt = 0
-        sentence = []
-        prev = ''
-        eof = False
-        while True:
-            if eof or train_file.tell() > file_pos + args.file_size / args.processes:
-                break
-
-            while True:
-                s = train_file.read(1)
-                if not s:
-                    eof = True
-                    break
-                elif s == ' ' or s == '\t':
-                    if prev in word2idx:
-                        sentence.append(prev)
-                    prev = ''
-                    if len(sentence) >= MAX_SENT_LEN:
-                        break
-                elif s == '\n':
-                    if prev in word2idx:
-                        sentence.append(prev)
-                    prev = ''
-                    break
-                else:
-                    prev += s
-
-            if len(sentence) > 0:
-                # subsampling
-                sent_id = []
-                if args.sample != 0:
-                    sent_len = len(sentence)
-                    i = 0
-                    while i < sent_len:
-                        word = sentence[i]
-                        f = freq[word] / args.train_words
-                        pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
-
-                        if pb > np.random.random_sample():
-                            sent_id.append( word2idx[word] )
-                        i += 1
-
-                if len(sent_id) < 2:
-                    word_cnt += len(sentence)
-                    sentence.clear()
-                    continue
-
-                next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
-                if args.cbow == 1: # train CBOW
-                    chunk = data_producer.cbow_producer(sent_id, len(sent_id), table_ptr_val,
-                                args.window, args.negative, args.vocab_size, args.batch_size, next_random)
-                elif args.cbow == 0: # train skipgram
-                    chunk = data_producer.sg_producer(sent_id, len(sent_id), table_ptr_val,
-                                args.window, args.negative, args.vocab_size, args.batch_size, next_random)
-
-                chunk_pos = 0
-                while chunk_pos < chunk.shape[0]:
-                    remain_space = args.batch_size - batch_count
-                    remain_chunk = chunk.shape[0] - chunk_pos
-
-                    if remain_chunk < remain_space:
-                        take_from_chunk = remain_chunk
-                    else:
-                        take_from_chunk = remain_space
-
-                    batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
-                    batch_count += take_from_chunk
-
-                    if batch_count == args.batch_size:
-                        data_queue.put(batch_placeholder)
-                        batch_count = 0
-
-                    chunk_pos += take_from_chunk
-
-                word_cnt += len(sentence)
-                if word_cnt - last_word_cnt > 10000:
-                    with word_count_actual.get_lock():
-                        word_count_actual.value += word_cnt - last_word_cnt
-                    last_word_cnt = word_cnt
-                sentence.clear()
-
-        with word_count_actual.get_lock():
-            word_count_actual.value += word_cnt - last_word_cnt
-
-    if batch_count > 0:
-        data_queue.put(batch_placeholder[:batch_count,:])
-    data_queue.put(None)
-
-def train_process(p_id, data_queue, args, model):
     optimizer = optim.SGD(model.parameters(), lr=args.lr)
+    
+    #st = time.monotonic()
+    prev_cnt = 0
+    cnt = 0
+    for it in range(args.iter):
+        for batch in loader:
+            cnt += len(batch[0])
+            if cnt - prev_cnt > 10000:
+                with word_count_actual.get_lock():
+                    word_count_actual.value += cnt - prev_cnt
+                delta = time.monotonic() - args.t_start
+                #print('\rtotal words: {0}, time spent: {1:.6f}, speed: {2:.6f}'.format(cnt, delta, cnt / delta) ,end='')
+                print('\rtotal words: {0}, time spent: {1:.6f}, speed: {2:.6f}'.format(word_count_actual.value, delta, word_count_actual.value / delta) ,end='')
+                prev_cnt = cnt
 
-    # get from data_queue and feed to model
-    while True:
-        batch = data_queue.get()
-        if batch is None:
-            break
-        else:
             if args.cbow == 1:
-                word_idx = Variable(batch[0].cuda())
-                ctx_inds = Variable(batch[1].cuda())
-                neg_inds = Variable(batch[2].cuda())
+                word_idx = Variable(batch[0].cuda(), requires_grad=False)
+                ctx_inds = Variable(batch[1].cuda(), requires_grad=False)
+                ctx_lens = Variable(batch[2].cuda(), requires_grad=False)
+                neg_inds = Variable(batch[3].cuda(), requires_grad=False)
 
                 optimizer.zero_grad()
-                loss = model(word_idx, ctx_inds, neg_inds)
+                loss = model(word_idx, ctx_inds, ctx_lens, neg_inds)
                 loss.backward()
                 optimizer.step()
                 model.emb0_lookup.weight.data[args.vocab_size].fill_(0)
@@ -313,7 +217,6 @@ def train_process(p_id, data_queue, args, model):
                 loss = model(batch)
                 loss.backward()
                 optimizer.step()
-
 
 if __name__ == '__main__':
     set_start_method('forkserver')
@@ -327,69 +230,22 @@ if __name__ == '__main__':
     #word2idx, word_list, freq = build_vocab(args)
     vocab_map, word_list, idx_count = build_vocab(args)
 
+    word_count_actual = mp.Value('L', 0)
+
     model = init_net(args)
     model.share_memory()
     if args.cuda:
         model.cuda()
-    optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
-    dataset = dataloader.SentenceDataset(
-        args.train,
-        vocab_map,
-    )
-    loader = dataloader.CBOWLoader(dataset, args.window, idx_count,
-                                   padding_index=len(idx_count),
-                                   sub_threshold=args.sample,
-                                   batch_size=args.batch_size,
-                                   num_workers=0)
-
-    #vars(args)['t_start'] = time.monotonic()
-    '''
-    data_queue = mp.SimpleQueue()
+    vars(args)['t_start'] = time.monotonic()
     processes = []
     for p_id in range(args.processes):
-        p = mp.Process(target=train_process, args=(p_id, data_queue, args, model))
+        p = mp.Process(target=train_process, args=(p_id, word_count_actual, vocab_map, idx_count, args, model))
         p.start()
         processes.append(p)
-    '''
-
-    st = time.monotonic()
-    prev_cnt = 0
-    cnt = 0
-    for it in range(args.iter):
-        for batch in loader:
-            cnt += len(batch[0])
-            if cnt - prev_cnt > 10000:
-                delta = time.monotonic() - st
-                print('\rtotal words: {0}, time spent: {1:.6f}, speed: {2:.6f}'.format(cnt, delta, cnt / delta) ,end='')
-                prev_cnt = cnt
-
-            #data_queue.put(batch)
-            #pdb.set_trace()
-
-            if args.cbow == 1:
-                word_idx = Variable(batch[0], requires_grad=False)
-                ctx_inds = Variable(batch[1], requires_grad=False)
-                neg_inds = Variable(batch[2], requires_grad=False)
-
-                optimizer.zero_grad()
-                loss = model(word_idx, ctx_inds, neg_inds)
-                loss.backward()
-                optimizer.step()
-                model.emb0_lookup.weight.data[args.vocab_size].fill_(0)
-            elif args.cbow == 0:
-                optimizer.zero_grad()
-                loss = model(batch)
-                loss.backward()
-                optimizer.step()
-
-    '''
-    for _ in range(args.processes):
-        data_queue.put(None)
 
     for p in processes:
         p.join()
-    '''
 
     # output vectors
     if args.cuda:
@@ -399,4 +255,5 @@ if __name__ == '__main__':
 
     data_producer.write_embs(args.output, word_list, embs, args.vocab_size, args.size)
     print("")
+    print(time.monotonic() - args.t_start)
 
