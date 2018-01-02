@@ -47,7 +47,7 @@ class SentenceParsingDataset(Dataset):
             vocab_map: LookupTable
             pos_map: LookupTable
             dep_map: LookupTable
-            
+
             Note:
                 `0` is treated as padding index.
                 LookupTable should map OOV to the `unknown` index.
@@ -177,9 +177,9 @@ class CBOWLoaderIter:
         ch_pos_idxs = np2tor(sent['ch_pos_idxs']).long()
         ch_dep_idxs = np2tor(sent['ch_dep_idxs']).long()
         ctx_idxs = np2tor(ctx).long()
-        ctx_len = (ctx == self.padding_index).sum(1)
-        neg_idxs = self.neg_prob.multinomial(n_sample * NEG_SAMPLES)
-        neg_idxs = neg_idxs.view(n_sample, -1)
+        ctx_len  = np2tor((ctx == self.padding_index).sum(1)).float()
+        neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES)).long()
+        #neg_idxs = neg_idxs.view(n_sample, -1)
         # neg_mask = (neg_idxs == word_idx.unsqueeze(-1)).float()
         return (word_idx, pos_idx,
                 pr_pos_idx, pr_dep_idx,
