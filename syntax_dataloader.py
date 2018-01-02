@@ -178,7 +178,7 @@ class CBOWLoaderIter:
         ch_dep_idxs = np2tor(sent['ch_dep_idxs']).long()
         ctx_idxs = np2tor(ctx).long()
         ctx_len = (ctx == self.padding_index).sum(1)
-        neg_idxs = self.neg_prob.multinomial(n_sample * NEG_SAMPLES)
+        neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES)).long()
         neg_idxs = neg_idxs.view(n_sample, -1)
         # neg_mask = (neg_idxs == word_idx.unsqueeze(-1)).float()
         return (word_idx, pos_idx,
