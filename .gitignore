@@ -4,3 +4,4 @@
 *.txt
 build/*
 *.pth.tar
+__pycache__

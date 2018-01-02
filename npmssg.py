@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+
+import argparse
+from collections import Counter
+import pdb
+import pickle
+import re
+import sys
+import time
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.autograd import Variable
+from torch import optim
+import torch.nn.functional as F
+import torch.multiprocessing as mp
+
+import data_producer
+
+from multiprocessing import set_start_method
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--train", type=str, default="", help="training file")
+parser.add_argument("--vocab", type=str, default="", help="training file")
+parser.add_argument("--save", type=str, default="csv.pth.tar", help="saved model filename")
+parser.add_argument("--size", type=int, default=300, help="word embedding dimension")
+parser.add_argument("--window", type=int, default=5, help="context window size")
+parser.add_argument("--sample", type=float, default=1e-5, help="subsample threshold")
+parser.add_argument("--negative", type=int, default=10, help="number of negative samples")
+parser.add_argument("--delta", type=float, default=-0.5, help="create new sense for a type if similarity lower than this value.")
+parser.add_argument("--senses", type=int, default=3, help="number of senses for a word.")
+parser.add_argument("--min_count", type=int, default=5, help="minimum frequency of a word")
+parser.add_argument("--processes", type=int, default=4, help="number of processes")
+parser.add_argument("--iter", type=int, default=3, help="number of iterations")
+parser.add_argument("--lr", type=float, default=-1.0, help="initial learning rate")
+parser.add_argument("--batch_size", type=int, default=100, help="(max) batch size")
+parser.add_argument("--cuda", action='store_true', default=False, help="enable cuda")
+
+MAX_SENT_LEN = 1000
+
+# Build the vocabulary.
+def file_split(f, delim=' \t\n', bufsize=1024):
+    prev = ''
+    while True:
+        s = f.read(bufsize)
+        if not s:
+            break
+        tokens = re.split('['+delim+']{1,}', s)
+        if len(tokens) > 1:
+            yield prev + tokens[0]
+            prev = tokens[-1]
+            for x in tokens[1:-1]:
+                yield x
+        else:
+            prev += s
+    if prev:
+        yield prev
+
+def build_vocab(args):
+    vocab = Counter()
+    word_count = 0
+    for word in file_split(open(args.train)):
+        vocab[word] += 1
+        word_count += 1
+        if word_count % 10000 == 0:
+            sys.stdout.write('%d\r' % len(vocab))
+    freq = {k:v for k,v in vocab.items() if v >= args.min_count}
+    word_count = sum([freq[k] for k in freq])
+    word_list = sorted(freq, key=freq.get, reverse=True)
+    word2idx = {}
+    for i,w in enumerate(word_list):
+        word2idx[w] = i
+
+    print("Vocab size: %ld" % len(word2idx))
+    print("Words in train file: %ld" % word_count)
+    vars(args)['vocab_size'] = len(word2idx)
+    vars(args)['train_words'] = word_count
+
+    return word2idx, word_list, freq
+
+
+class NPMSSG(nn.Module):
+    def __init__(self, args):
+        super(NPMSSG, self).__init__()
+        self.global_embs = nn.Embedding(args.vocab_size+1, args.size, padding_idx=args.vocab_size, sparse=True)
+        #self.cluster_embs = np.zeros((args.vocab_size*5, args.size))
+        self.cluster_embs = nn.Embedding(args.vocab_size * args.senses, args.size, sparse=True)
+        self.sense_embs = nn.Embedding(args.vocab_size * args.senses, args.size, sparse=True)
+
+        #self.word2sense = [ [i] for i in range(args.vocab_size) ]
+        word2sense = np.zeros((args.vocab_size, args.senses), dtype='int32')
+        for i in range(args.vocab_size):
+            word2sense[i, 0] = i
+        self.word2sense = torch.nn.Parameter(torch.from_numpy(word2sense).int())
+        self.word_sense_cnts = torch.nn.Parameter(torch.ones((args.vocab_size,)).int())
+        self.counter_list = torch.nn.Parameter(torch.zeros((args.vocab_size * args.senses,)).float())
+
+        self.global_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
+        self.sense_embs.weight.data.uniform_(-0.5/args.size, 0.5/args.size)
+        #self.global_embs.weight.data.uniform_(0, 1/args.size)
+        #self.sense_embs.weight.data.uniform_(0, 1/args.size)
+
+        self.n_senses = args.vocab_size
+        self.batch_size = args.batch_size
+        self.size = args.size
+        self.window = args.window
+        self.negative = args.negative
+        self.vocab_size = args.vocab_size
+
+    def get_context_feats(self, ctx_type_indices):
+        ctx_type_embs = self.global_embs(ctx_type_indices)
+        return torch.sum(ctx_type_embs, 1).cpu().data.numpy()
+
+    def forward(self, data):
+        ctx_word_inds = data[:, 0:2*self.window]
+        ctx_mask = data[:, 2*self.window:4*self.window].float()
+        sense_idx = data[:, 4*self.window]
+        neg_word_inds = data[:, 4*self.window+1:4*self.window+1+self.negative]
+        neg_mask = data[:, 4*self.window+1+self.negative:].float()
+
+        ctx_word_embs = self.global_embs(ctx_word_inds)
+        sense_embs = self.sense_embs(sense_idx).unsqueeze(2)
+        neg_word_embs = self.global_embs(neg_word_inds)
+
+        # Neg Log Likelihood
+        pos_ips = torch.bmm(ctx_word_embs, sense_embs)[:,:,0]
+        pos_loss = torch.sum( -F.logsigmoid(torch.clamp(pos_ips,max=10,min=-10)) * ctx_mask)
+        neg_ips = torch.bmm(neg_word_embs, sense_embs)[:,:,0]
+        neg_loss = torch.sum( -F.logsigmoid(torch.clamp(-neg_ips,max=10,min=-10)) * neg_mask )
+
+        return pos_loss + neg_loss
+
+
+# Initialize model.
+def init_net(args):
+    if args.lr == -1.0:
+        vars(args)['lr'] = 0.025
+    return NPMSSG(args)
+
+def save_model(filename, model, args, word2idx):
+    print("Saving to %s ..." % filename)
+    print("# of senses: %d" % model.word_sense_cnts.data.numpy().sum())
+    torch.save({
+        'word2idx':word2idx,
+        'args':args,
+        #'word2sense': model.word2sense,
+        'n_senses': model.n_senses,
+        'params': model.state_dict()
+    }, filename)
+
+def load_model(filename):
+    checkpoint = torch.load(filename)
+    word2idx = checkpoint['word2idx']
+    args = checkpoint['args']
+    model = NPMSSG(args)
+    if args.cuda:
+        model.cuda()
+
+    model.global_embs.weight.data = checkpoint['params']['global_embs.weight']
+    model.cluster_embs.weight.data = checkpoint['params']['cluster_embs.weight']
+    model.sense_embs.weight.data = checkpoint['params']['sense_embs.weight']
+    model.word2sense.data = checkpoint['params']['word2sense']
+    model.word_sense_cnts.data = checkpoint['params']['word_sense_cnts']
+    model.n_senses = checkpoint['n_senses']
+
+    return model, word2idx
+
+# Training
+def train_process_sent_producer(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args):
+    if args.negative > 0:
+        table_ptr_val = data_producer.init_unigram_table(word_list, freq, args.train_words)
+
+    train_file = open(args.train)
+    file_pos = args.file_size * p_id // args.processes
+    train_file.seek(file_pos, 0)
+    while True:
+        try:
+            train_file.read(1)
+        except UnicodeDecodeError:
+            file_pos -= 1
+            train_file.seek(file_pos, 0)
+        else:
+            train_file.seek(file_pos, 0)
+            break
+
+    batch_count = 0
+    batch_placeholder = np.zeros((args.batch_size, 4*args.window+1+2*args.negative), 'int64')
+
+    for it in range(args.iter):
+        train_file.seek(file_pos, 0)
+
+        last_word_cnt = 0
+        word_cnt = 0
+        sentence = []
+        prev = ''
+        eof = False
+        while True:
+            if eof or train_file.tell() > file_pos + args.file_size / args.processes:
+                break
+
+            while True:
+                s = train_file.read(1)
+                if not s:
+                    eof = True
+                    break
+                elif s == ' ' or s == '\t':
+                    if prev in word2idx:
+                        sentence.append(prev)
+                    prev = ''
+                    if len(sentence) >= MAX_SENT_LEN:
+                        break
+                elif s == '\n':
+                    if prev in word2idx:
+                        sentence.append(prev)
+                    prev = ''
+                    break
+                else:
+                    prev += s
+
+            if len(sentence) > 0:
+                # subsampling
+                sent_id = []
+                if args.sample != 0:
+                    sent_len = len(sentence)
+                    i = 0
+                    while i < sent_len:
+                        word = sentence[i]
+                        f = freq[word] / args.train_words
+                        pb = (np.sqrt(f / args.sample) + 1) * args.sample / f;
+
+                        if pb > np.random.random_sample():
+                            sent_id.append( word2idx[word] )
+                        i += 1
+
+                if len(sent_id) < 2:
+                    word_cnt += len(sentence)
+                    sentence.clear()
+                    continue
+
+                next_random = (2**24) * np.random.randint(0, 2**24) + np.random.randint(0, 2**24)
+                chunk = data_producer.npmssg_producer(sent_id, len(sent_id), table_ptr_val, args.window,
+                            args.negative, args.vocab_size, args.batch_size, next_random)
+
+                chunk_pos = 0
+                while chunk_pos < chunk.shape[0]:
+                    remain_space = args.batch_size - batch_count
+                    remain_chunk = chunk.shape[0] - chunk_pos
+
+                    if remain_chunk < remain_space:
+                        take_from_chunk = remain_chunk
+                    else:
+                        take_from_chunk = remain_space
+
+                    batch_placeholder[batch_count:batch_count+take_from_chunk, :] = chunk[chunk_pos:chunk_pos+take_from_chunk, :]
+                    batch_count += take_from_chunk
+
+                    if batch_count == args.batch_size:
+                        data_queue.put(batch_placeholder)
+                        batch_count = 0
+
+                    chunk_pos += take_from_chunk
+
+                word_cnt += len(sentence)
+                if word_cnt - last_word_cnt > 10000:
+                    with word_count_actual.get_lock():
+                        word_count_actual.value += word_cnt - last_word_cnt
+                    last_word_cnt = word_cnt
+                sentence.clear()
+
+        with word_count_actual.get_lock():
+            word_count_actual.value += word_cnt - last_word_cnt
+    if batch_count > 0:
+        data_queue.put(batch_placeholder[:batch_count,:])
+    data_queue.put(None)
+
+def train_process(p_id, word_count_actual, word2idx, word_list, freq, args, model):
+    data_queue = mp.SimpleQueue()
+
+    lr = args.lr
+    #optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+    optimizer = optim.Adagrad(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+
+    t = mp.Process(target=train_process_sent_producer, args=(p_id, data_queue, word_count_actual, word_list, word2idx, freq, args))
+    t.start()
+
+    cluster_embs = model.cluster_embs.weight.data.numpy()
+    #counter_list = np.zeros((model.vocab_size * 5,), dtype='float32')
+
+    # get from data_queue and feed to model
+    prev_word_cnt = 0
+    while True:
+        chunk = data_queue.get()
+        if chunk is None:
+            break
+        else:
+            # lr anneal & output
+            if word_count_actual.value - prev_word_cnt > 10000:
+                #if args.lr_anneal:
+                #    lr = args.lr * (1 - word_count_actual.value / (args.iter * args.train_words))
+                #    if lr < 0.0001 * args.lr:
+                #        lr = 0.0001 * args.lr
+                #    for param_group in optimizer.param_groups:
+                #        param_group['lr'] = lr
+
+                print("\rProgess: %0.2f, Words/sec: %f, word_cnt: %d" % (word_count_actual.value / (args.iter * args.train_words) * 100, word_count_actual.value / (time.monotonic() - args.t_start), word_count_actual.value), end='')
+                prev_word_cnt = word_count_actual.value
+
+            # train
+            if args.cuda:
+                data = Variable(torch.LongTensor(chunk[:, :2*args.window]).cuda(), requires_grad=False)
+            else:
+                data = Variable(torch.LongTensor(chunk[:, :2*args.window]), requires_grad=False)
+
+            context_feats = model.get_context_feats(data)
+            sense_ids, create_count = data_producer.npmssg_select_sense(
+                chunk[:, 4*args.window], context_feats, cluster_embs,
+                model.word2sense.data.numpy(), model.word_sense_cnts.data.numpy(), model.counter_list.data.numpy(),
+                chunk.shape[0], args.size, args.senses, args.delta, model.n_senses)
+            model.n_senses += create_count
+            chunk[:, 4*args.window] = sense_ids
+
+            if args.cuda:
+                data = Variable(torch.LongTensor(chunk).cuda(), requires_grad=False)
+            else:
+                data = Variable(torch.LongTensor(chunk), requires_grad=False)
+
+            optimizer.zero_grad()
+            loss = model(data)
+            loss.backward()
+            optimizer.step()
+            model.global_embs.weight.data[args.vocab_size].fill_(0)
+
+    #print()
+    #print(model.n_senses)
+    #print(model.counter_list.min(),model.counter_list.max())
+    t.join()
+
+
+if __name__ == '__main__':
+    set_start_method('forkserver')
+
+    args = parser.parse_args()
+    print("Starting training using file %s" % args.train)
+    train_file = open(args.train)
+    train_file.seek(0, 2)
+    vars(args)['file_size'] = train_file.tell()
+
+    word_count_actual = mp.Value('L', 0)
+
+    if args.vocab == '':
+        word2idx, word_list, freq = build_vocab(args)
+    else:
+        with open(args.vocab, 'rb') as f:
+            word2idx, word_list, freq, pos2idx, dep2id = pickle.load(f)
+            word_count = sum([freq[k] for k in freq])
+            vars(args)['vocab_size'] = len(word2idx)
+            vars(args)['train_words'] = word_count
+            print("Vocab size: %ld" % len(word2idx))
+            print("Words in train file: %ld" % word_count)
+
+    model = init_net(args)
+    model.share_memory()
+    if args.cuda:
+        #model.cuda()
+        model.global_embs = model.global_embs.cuda()
+        model.sense_embs = model.sense_embs.cuda()
+    #model.cluster_embs = model.cluster_embs.cpu()
+    #pdb.set_trace()
+    #model.word2sense = model.word2sense.cpu()
+    #model.word_sense_cnts = model.word_sense_cnts.cpu()
+
+    vars(args)['lr_anneal'] = True
+    vars(args)['t_start'] = time.monotonic()
+    processes = []
+    for p_id in range(args.processes):
+        p = mp.Process(target=train_process, args=(p_id, word_count_actual, word2idx, word_list, freq, args, model))
+        p.start()
+        processes.append(p)
+    print("Start training")
+
+    for p in processes:
+        p.join()
+    del processes
+    print("\n", time.monotonic() - args.t_start, " secs ", word_count_actual.value)
+
+    filename = args.save
+    if not filename.endswith('.pth.tar'):
+        filename += '.pth.tar'
+    save_model(filename, model, args, word2idx)
+
+

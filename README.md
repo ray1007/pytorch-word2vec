@@ -1,4 +1,4 @@
-## !!! This readme is still in progress, some links or statements may be incorrect. (Last updated: Dec. 3)
+## !!! This readme is still in progress, some links or statements may be incorrect. (Last updated: Dec. 31)
 ## pytorch-word2vec
 
 The aim of this project is to build a model for neural network based word embedding research. This implementation provides autograd with pytorch, and is optimized to have reasonable training speed. Please include the url of this repository if you are using this in your research! :)
@@ -21,6 +21,11 @@ pytorch 0.2.0_3
 - Train word2vec without multiprocessing: `[CUDA_VISIBLE_DEVICES=<device_id>] ./main_simple.py --cuda --train <your_corpus.txt> --output <your_output.txt> --cbow 0 --size 300 --window 5 --sample 1e-4 --negative 5 --iter 1 --batch_size 100`
 - Train CSV single prototype with: `[CUDA_VISIBLE_DEVICES=<device_id>] ./csv.py --cuda --train <your_corpus.txt> --save <your_output.txt> --size 300 --window 5 --sample 1e-4 --negative 5 --min_count 5 --processes 4 --iter 1 --batch_size 100`
 - Train CSV multi-prototype with: `[CUDA_VISIBLE_DEVICES=<device_id>] ./csv.py --cuda --train <your_corpus.txt> --save <your_output.txt> --size 300 --window 5 --sample 1e-4 --negative 5 --min_count 5 --processes 4 --iter 1 --batch_size 100 --multi-proto`
+
+### Implemented Models:
+- CBOW and Skipgram model in `word2vec`. [paper]()
+- NP-MSSG model. [paper]()
+-  
 
 ### Benchmarking:
 #### Training speed (Word/sec):
