@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+from utils import AliasTable, sliding_window, np2tor, sum_normalize
 from nltk.parse.corenlp import CoreNLPDependencyParser
 
 
@@ -90,7 +91,7 @@ class SentenceParsingDataset(Dataset):
 
 class SentenceParsedDataset:
     def __init__(self, filelist):
-        if isinstance(filepath, str):
+        if isinstance(filelist, str):
             filelist = [filelist]
         self.sents = []
         for fn in filelist:
@@ -109,11 +110,11 @@ class CBOWLoaderIter:
         self.shuffle = loader.shuffle
         self.batch_size = loader.batch_size
         self.window_size = loader.window_size
+        self.padding_index = loader.padding_index
 
-        idx_count = loader.idx_count
-        arr = idx_count ** loader.neg_power
-        self.neg_prob = np2tor(arr / arr.sum())
-        ratio = loader.sub_threshold / (idx_count / idx_count.sum())
+        neg_prob = sum_normalize(loader.idx_count ** loader.neg_power)
+        self.neg_table = AliasTable(neg_prob)
+        ratio = loader.sub_threshold / sum_normalize(loader.idx_count)
         self.sub_prob = np.sqrt(ratio) + ratio
 
         self.in_iter = iter(loader.in_loader)
@@ -187,7 +188,7 @@ class CBOWLoaderIter:
 
 
 class CBOWLoader:
-    def __init__(self, dataset, window_size, idx_count,
+    def __init__(self, dataset, window_size, idx_count, padding_index,
                  neg_power=0.75, sub_threshold=1e-5,
                  batch_size=1, shuffle=False, num_workers=0):
         '''
@@ -197,6 +198,7 @@ class CBOWLoader:
         self.dataset = dataset
         self.window_size = window_size
         self.idx_count = idx_count
+        self.padding_index = padding_index
         self.neg_power = neg_power
         self.sub_threshold = sub_threshold
         self.shuffle = shuffle
