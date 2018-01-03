@@ -10,6 +10,7 @@ import sys
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--train", type=str, default="", help="training file")
+parser.add_argument("--output", type=str, default="vocab_dict.pkl", help="output file")
 parser.add_argument("--min_count", type=int, default=5, help="minimum frequency of a word")
 
 # Build the vocabulary.
@@ -80,7 +81,7 @@ if __name__ == '__main__':
     # objs = word2idx, word_list, freq, pos2idx, dep2idx
     objs = build_vocab(args)
 
-    with open('vocab_dict.pkl', 'wb') as f:
+    with open(args.output, 'wb') as f:
         pickle.dump(objs, f, pickle.HIGHEST_PROTOCOL)
 
 
