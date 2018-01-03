@@ -184,14 +184,15 @@ class CBOWLoaderIter:
         ch_pos_idxs = np2tor(sent['ch_pos_idxs']).long()
         ch_dep_idxs = np2tor(sent['ch_dep_idxs']).long()
         ctx_idxs = np2tor(ctx).long()
-        ctx_len  = np2tor((ctx != self.padding_index).sum(1)).float()
+        ctx_mask = np2tor(np.asarray((ctx != self.padding_index), 'float32')).float()
         neg_idxs = np2tor(self.neg_table.sample(n_sample, NEG_SAMPLES)).long()
         #neg_idxs = neg_idxs.view(n_sample, -1)
-        # neg_mask = (neg_idxs == word_idx.unsqueeze(-1)).float()
+        neg_mask = (neg_idxs == word_idx.unsqueeze(-1)).float()
         return (word_idx, pos_idx,
                 pr_pos_idx, pr_dep_idx,
                 ch_pos_idxs, ch_dep_idxs,
-                ctx_idxs, ctx_len, neg_idxs)
+                ctx_idxs, ctx_mask,
+                neg_idxs, neg_mask)
 
 
 class CBOWLoader:
