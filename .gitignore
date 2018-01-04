@@ -5,3 +5,4 @@
 build/*
 *.pth.tar
 __pycache__
+log*
